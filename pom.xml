@@ -10,7 +10,7 @@
     </parent>
     <groupId>com.deftgray</groupId>
     <artifactId>ClashProxy</artifactId>
-    <version>0.0.3</version>
+    <version>1.0.0</version>
     <name>ClashProxy</name>
     <description>ClashProxy</description>
     <url/>

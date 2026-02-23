@@ -119,7 +119,7 @@ public class DeckService {
                         .deepLink(deepLink)
                         .build();
             }
-            log.warn("Generated deck validation failed.");
+            log.warn("Generated deck validation failed. See reasons above.");
             // If invalid, loop again
         }
 
@@ -262,16 +262,22 @@ public class DeckService {
     }
 
     private boolean isValidDeck(List<Card> deck) {
-        if (deck.size() != 8)
+        if (deck.size() != 8) {
+            log.warn("Deck validation failed: Invalid deck size {}. Expected 8.", deck.size());
             return false;
+        }
 
         long heroCount = deck.stream().filter(c -> Boolean.TRUE.equals(c.getIsHero())).count();
-        if (heroCount > 1)
+        if (heroCount > 1) {
+            log.warn("Deck validation failed: too many heroes ({}). Expected max 1.", heroCount);
             return false;
+        }
 
         long evolvedCount = deck.stream().filter(c -> Boolean.TRUE.equals(c.getEvolved())).count();
-        if (evolvedCount > 2)
+        if (evolvedCount > 2) {
+            log.warn("Deck validation failed: too many evolved cards ({}). Expected max 2.", evolvedCount);
             return false;
+        }
 
         return true;
     }

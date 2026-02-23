@@ -55,17 +55,26 @@ public class LlmService {
                 "model", modelName,
                 "messages", List.of(
                         Map.of("role", "system", "content",
-                                "You are a Clash Royale expert. Build the best deck (8 cards) from the provided list. Rules: Max 1 Hero/Champion. Max 2 Evolved cards. Return ONLY a JSON object with keys: 'cards' (array of objects with keys: 'name', 'isEvolved' (boolean), 'isHero' (boolean), 'level' (integer)), 'strategy' (string, MUST be one of: 'Beatdown', 'Control', 'Cycle', 'Bait', 'Siege', 'Bridge Spam', 'Split Lane', 'Hybrid'), and 'tactic' (string, explanation of how to play). No markdown."),
+                                "You are a Clash Royale expert. Build the best deck (8 cards) from the provided list.\n"
+                                        +
+                                        "ABSOLUTE STRICT RULES THAT CANNOT BE BROKEN:\n" +
+                                        "1. Exactly ONE card can have \"isHero\": true. The other 7 MUST have \"isHero\": false.\n"
+                                        +
+                                        "2. A MAXIMUM of TWO cards can have \"isEvolved\": true. The rest MUST have \"isEvolved\": false.\n"
+                                        +
+                                        "Return ONLY a JSON object with keys: 'cards' (array of objects with keys: 'name', 'isEvolved' (boolean), 'isHero' (boolean), 'level' (integer)), 'strategy' (string, MUST be one of: 'Beatdown', 'Control', 'Cycle', 'Bait', 'Siege', 'Bridge Spam', 'Split Lane', 'Hybrid'), and 'tactic' (string, explanation of how to play). No markdown."),
                         Map.of("role", "user", "content", prompt)));
 
         HttpEntity<Map<String, Object>> entity = new HttpEntity<>(body, headers);
 
         try {
+            long startTime = System.currentTimeMillis();
             String response = restTemplate.postForObject(openRouterUrl, entity, String.class);
-            log.info("Received response from LLM: {}", response);
+            long duration = System.currentTimeMillis() - startTime;
+            log.info("Received response from LLM (Model: {}) in {} ms", modelName, duration);
             return parseResponse(response);
         } catch (Exception e) {
-            log.error("Error calling OpenRouter API", e);
+            log.error("Error calling OpenRouter API with model {}", modelName, e);
             e.printStackTrace();
             return null;
         }
@@ -101,17 +110,22 @@ public class LlmService {
                         Map.of("role", "system", "content",
                                 "You are a Clash Royale expert. Complete the deck to 8 cards using the player's collection. Respect the user's selected playstyle: "
                                         + playStyle
-                                        + ". Return ONLY a JSON object with keys: 'cards' (array of objects with keys: 'name', 'isEvolved' (boolean), 'isHero' (boolean), 'level' (integer)), 'strategy' (string enum), and 'tactic' (string)."),
+                                        + ".\nABSOLUTE STRICT RULES THAT CANNOT BE BROKEN:\n"
+                                        + "1. Exactly ONE card can have \"isHero\": true in the ENTIRE DECK. The other 7 MUST have \"isHero\": false.\n"
+                                        + "2. A MAXIMUM of TWO cards can have \"isEvolved\": true in the ENTIRE DECK. The rest MUST have \"isEvolved\": false.\n"
+                                        + "Return ONLY a JSON object with keys: 'cards' (array of objects with keys: 'name', 'isEvolved' (boolean), 'isHero' (boolean), 'level' (integer)), 'strategy' (string enum), and 'tactic' (string)."),
                         Map.of("role", "user", "content", prompt)));
 
         HttpEntity<Map<String, Object>> entity = new HttpEntity<>(body, headers);
 
         try {
+            long startTime = System.currentTimeMillis();
             String response = restTemplate.postForObject(openRouterUrl, entity, String.class);
-            log.info("Received response from LLM: {}", response);
+            long duration = System.currentTimeMillis() - startTime;
+            log.info("Received response from LLM (Model: {}) in {} ms", modelName, duration);
             return parseResponse(response);
         } catch (Exception e) {
-            log.error("Error calling OpenRouter API", e);
+            log.error("Error calling OpenRouter API with model {}", modelName, e);
             e.printStackTrace();
             return null;
         }

@@ -10,6 +10,12 @@ import java.util.List;
 @NoArgsConstructor
 @JsonIgnoreProperties(ignoreUnknown = true)
 public class LlmDeckSuggestion {
+    @JsonProperty("selected_evolutions")
+    private List<String> selectedEvolutions;
+    
+    @JsonProperty("selected_heroes")
+    private List<String> selectedHeroes;
+
     private List<LlmCardSuggestion> cards;
     private String strategy;
     private String tactic;

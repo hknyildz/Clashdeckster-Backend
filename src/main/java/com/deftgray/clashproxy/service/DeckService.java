@@ -1,9 +1,11 @@
 package com.deftgray.clashproxy.service;
 
+import com.deftgray.clashproxy.dto.ClashApiResponse;
 import com.deftgray.clashproxy.dto.LlmDeckSuggestion;
 import com.deftgray.clashproxy.model.Card;
 import com.deftgray.clashproxy.dto.DeckResponse;
 import com.deftgray.clashproxy.dto.SimplifiedCard;
+import com.deftgray.clashproxy.dto.DeckCompletionRequest;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -26,12 +28,15 @@ public class DeckService {
     public DeckResponse generateFreeDeck(String playerTag) {
         log.info("Generating free deck for player: {}", playerTag);
         // 1. Get Player Cards
-        List<Card> allCards = clashService.getPlayerCards(playerTag);
-        if (allCards.isEmpty()) {
+        ClashApiResponse playerResponse = clashService.getPlayerCards(playerTag);
+        if (playerResponse == null || playerResponse.getCards() == null || playerResponse.getCards().isEmpty()) {
             log.warn("No cards found for player: {}", playerTag);
             return DeckResponse.builder().valid(false).strategy("N/A")
                     .tacticMessage("Player not found or no cards available.").build();
         }
+        List<Card> allCards = playerResponse.getCards().stream()
+                .map(clashService::mapToCard)
+                .toList();
         log.info("Found {} cards for player", allCards.size());
 
         // 2. Simplify for LLM
@@ -47,7 +52,7 @@ public class DeckService {
         for (int i = 0; i < MAX_RETRIES; i++) {
             log.info("Attempt {}/{} to generate deck via LLM", i + 1, MAX_RETRIES);
             LlmDeckSuggestion suggestion = llmService
-                    .generateDeckRecommendation(simplifiedCards);
+                    .generateDeckRecommendation(simplifiedCards, playerResponse.getBestTrophies());
 
             if (suggestion == null || suggestion.getCards() == null || suggestion.getCards().isEmpty()) {
                 log.error("LLM returned empty suggestion");
@@ -64,9 +69,10 @@ public class DeckService {
                     Card originalCard = cardMap.get(name);
 
                     boolean userHasEvolution = Boolean.TRUE.equals(originalCard.getEvolved());
-                    boolean llmWantsEvolution = cardSuggestion.isEvolved();
-
-                    originalCard.setEvolved(userHasEvolution && llmWantsEvolution);
+                    List<String> intendedEvos = suggestion.getSelectedEvolutions() != null ? suggestion.getSelectedEvolutions() : new ArrayList<>();
+                    
+                    // Only grant evolution if user owns it AND the LLM explicitly intended it in the selected_evolutions array
+                    originalCard.setEvolved(userHasEvolution && intendedEvos.contains(name));
 
                     deck.add(originalCard);
                 } else {
@@ -74,8 +80,11 @@ public class DeckService {
                 }
             }
 
+
+            enforceSmartConstraints(deck, playerResponse.getBestTrophies());
+
             // 4. Validate
-            if (isValidDeck(deck)) {
+            if (isValidDeck(deck, playerResponse.getBestTrophies())) {
                 log.info("Valid deck generated: {}", suggestion.getStrategy());
 
                 double avgElixir = deck.stream()
@@ -112,16 +121,19 @@ public class DeckService {
                 .build();
     }
 
-    public DeckResponse completeDeck(com.deftgray.clashproxy.dto.DeckCompletionRequest request) {
+    public DeckResponse completeDeck(DeckCompletionRequest request) {
         log.info("Completing deck for player: {}", request.getPlayerTag());
 
         // 1. Get Player Cards & All Cards
-        List<Card> playerCards = clashService.getPlayerCards(request.getPlayerTag());
-        List<Card> allCards = clashService.getAllCards();
-
-        if (playerCards.isEmpty()) {
+        ClashApiResponse playerResponse = clashService.getPlayerCards(request.getPlayerTag());
+        if (playerResponse == null || playerResponse.getCards() == null || playerResponse.getCards().isEmpty()) {
             return DeckResponse.builder().valid(false).tacticMessage("Player cards not found.").build();
         }
+        List<Card> playerCards = playerResponse.getCards().stream()
+                .map(clashService::mapToCard)
+                .toList();
+
+        List<Card> allCards = clashService.getAllCards();
 
         // 2. Process Partial Deck & Substitutions
         List<Card> forcedUpdates = new ArrayList<>();
@@ -154,8 +166,8 @@ public class DeckService {
 
         // Retry Loop
         for (int i = 0; i < MAX_RETRIES; i++) {
-            com.deftgray.clashproxy.dto.LlmDeckSuggestion suggestion = llmService.generateDeckCompletion(
-                    simplifiedCollection, forcedNames, request.getPlayStyle());
+            LlmDeckSuggestion suggestion = llmService.generateDeckCompletion(
+                    simplifiedCollection, forcedNames, request.getPlayStyle(), playerResponse.getBestTrophies());
 
             if (suggestion == null || suggestion.getCards() == null)
                 continue;
@@ -171,19 +183,23 @@ public class DeckService {
             // Let's trust LLM result but fall back to replacements if LLM suggestions fail
             // validation
 
-            for (com.deftgray.clashproxy.dto.LlmDeckSuggestion.LlmCardSuggestion s : suggestion.getCards()) {
+            for (LlmDeckSuggestion.LlmCardSuggestion s : suggestion.getCards()) {
                 if (cardMap.containsKey(s.getName())) {
-                    Card original = cardMap.get(s.getName());
-                    boolean userHasEvolution = Boolean.TRUE.equals(original.getEvolved());
-                    boolean llmWantsEvolution = s.isEvolved();
-                    original.setEvolved(userHasEvolution && llmWantsEvolution);
-                    finalDeck.add(original);
+                    Card originalCard = cardMap.get(s.getName());
+                    boolean userHasEvolution = Boolean.TRUE.equals(originalCard.getEvolved());
+                    List<String> intendedEvos = suggestion.getSelectedEvolutions() != null ? suggestion.getSelectedEvolutions() : new ArrayList<>();
+                    
+                    originalCard.setEvolved(userHasEvolution && intendedEvos.contains(originalCard.getName()));
+                    finalDeck.add(originalCard);
                 }
             }
 
+
+            enforceSmartConstraints(finalDeck, playerResponse.getBestTrophies());
+
             // Validate and potentially mix in forced cards if missing?
             // For MVP, if size != 8, we retry.
-            if (isValidDeck(finalDeck)) {
+            if (isValidDeck(finalDeck,playerResponse.getBestTrophies())) {
                 return buildResponse(finalDeck, suggestion);
             }
         }
@@ -221,7 +237,7 @@ public class DeckService {
                 .orElse(null);
     }
 
-    private DeckResponse buildResponse(List<Card> deck, com.deftgray.clashproxy.dto.LlmDeckSuggestion suggestion) {
+    private DeckResponse buildResponse(List<Card> deck, LlmDeckSuggestion suggestion) {
         double avgElixir = deck.stream()
                 .mapToInt(c -> c.getElixirCost() != null ? c.getElixirCost() : 0)
                 .average().orElse(0.0);
@@ -242,28 +258,61 @@ public class DeckService {
                 .build();
     }
 
-    private boolean isValidDeck(List<Card> deck) {
-        if (deck.size() != 8)
-        {
-            log.error("deck size can't be greater than 8, current size:{}",deck.size());
+    private boolean isValidDeck(List<Card> deck, Integer maxTrophies ) {
+        if (deck.size() != 8) {
+            log.error("deck size can't be greater than 8, current size:{}", deck.size());
             return false;
         }
 
         long heroCount = deck.stream().filter(c -> Boolean.TRUE.equals(c.getIsHero())).count();
-        if (heroCount > 1)
-        {
-            log.error("Hero count can't be greater then 1, current:{}",heroCount);
-            return false;
+        long evolvedCount = deck.stream().filter(c -> Boolean.TRUE.equals(c.getEvolved())).count();
+
+        int trophies = maxTrophies != null ? maxTrophies : 0;
+
+        if (trophies < 3000) {
+            if (heroCount > 1 || evolvedCount > 1) {
+                log.error("Under 3000 trophies: max 1 hero & max 1 evo. Current Hero: {}, Evolved: {}", heroCount, evolvedCount);
+                return false;
+            }
+        } else {
+            if (heroCount + evolvedCount > 3) {
+                log.error("Over 3000 trophies: max 3 special cards total. Current Hero: {}, Evolved: {}", heroCount, evolvedCount);
+                return false;
+            }
+            if (heroCount > 2) {
+                log.error("Hero count can't be greater than 2, current: {}", heroCount);
+                return false;
+            }
+            if (evolvedCount > 2) {
+                log.error("Evolved count can't be greater than 2, current: {}", evolvedCount);
+                return false;
+            }
         }
 
-        long evolvedCount = deck.stream().filter(c -> Boolean.TRUE.equals(c.getEvolved())).count();
-        if (evolvedCount > 2)
-        {
-            log.error("Evolved card count can't be greater then 2, current:{}",evolvedCount);
-            return false;
-        }
         return true;
     }
+
+    private void enforceSmartConstraints(List<Card> deck, Integer maxTrophies) {
+        int limit = (maxTrophies != null && maxTrophies >= 3000) ? 3 : 2;
+        int maxEvos = (maxTrophies != null && maxTrophies >= 3000) ? 2 : 1;
+        
+        long heroCount = deck.stream().filter(c -> Boolean.TRUE.equals(c.getIsHero())).count();
+        long availableEvoSlots = Math.min(maxEvos, limit - heroCount);
+        
+        int grantedEvoCount = 0;
+        for (Card card : deck) {
+            if (Boolean.TRUE.equals(card.getEvolved())) {
+                if (grantedEvoCount < availableEvoSlots) {
+                    grantedEvoCount++;
+                } else {
+                    card.setEvolved(false);
+                    log.info("Smart-clamped excess evolution for {} to strictly obey limit", card.getName());
+                }
+            }
+        }
+    }
+
+
 
     private SimplifiedCard toSimplified(Card card) {
         return SimplifiedCard.builder()

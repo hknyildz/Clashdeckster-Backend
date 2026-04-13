@@ -1,5 +1,6 @@
 package com.deftgray.clashproxy.service;
 
+import com.deftgray.clashproxy.dto.LlmDeckSuggestion;
 import com.deftgray.clashproxy.model.Card;
 import com.deftgray.clashproxy.dto.DeckResponse;
 import com.deftgray.clashproxy.dto.SimplifiedCard;
@@ -45,7 +46,7 @@ public class DeckService {
         // 3. Retry Loop
         for (int i = 0; i < MAX_RETRIES; i++) {
             log.info("Attempt {}/{} to generate deck via LLM", i + 1, MAX_RETRIES);
-            com.deftgray.clashproxy.dto.LlmDeckSuggestion suggestion = llmService
+            LlmDeckSuggestion suggestion = llmService
                     .generateDeckRecommendation(simplifiedCards);
 
             if (suggestion == null || suggestion.getCards() == null || suggestion.getCards().isEmpty()) {
@@ -54,38 +55,18 @@ public class DeckService {
             }
             log.info("LLM suggested cards: {}", suggestion.getCards());
 
-            // Map suggestions back to Cards
             List<Card> deck = new ArrayList<>();
-            for (com.deftgray.clashproxy.dto.LlmDeckSuggestion.LlmCardSuggestion cardSuggestion : suggestion
+            for (LlmDeckSuggestion.LlmCardSuggestion cardSuggestion : suggestion
                     .getCards()) {
                 String name = cardSuggestion.getName();
 
                 if (cardMap.containsKey(name)) {
                     Card originalCard = cardMap.get(name);
 
-                    // Create a copy or modify the card for the response (to reflect selected
-                    // evolution)
-                    // Since Card is mutable, we should ideally clone it, but for now we'll set it.
-                    // However, we must be careful not to modify the 'allCards' list if it's
-                    // cached/persisted.
-                    // In this scope, 'allCards' is just fetched from API, so it's safe to modify
-                    // strictly for response.
-
-                    // But wait, if user has Evolution but LLM says isEvolved=false, we should set
-                    // it false.
-                    // If user has NO Evolution but LLM says isEvolved=true, this is invalid (or we
-                    // ignore LLM).
-
                     boolean userHasEvolution = Boolean.TRUE.equals(originalCard.getEvolved());
                     boolean llmWantsEvolution = cardSuggestion.isEvolved();
 
-                    // Only invoke evolution if user HAS it AND LLM wants it.
                     originalCard.setEvolved(userHasEvolution && llmWantsEvolution);
-
-                    // Same for Hero? Usually Hero is intrinsic to the card type (Champion).
-                    // LLM shouldn't "turn off" Hero status for a Champion.
-                    // But we can trust the original card's Hero status.
-                    // originalCard.setIsHero(originalCard.getIsHero());
 
                     deck.add(originalCard);
                 } else {
@@ -263,16 +244,24 @@ public class DeckService {
 
     private boolean isValidDeck(List<Card> deck) {
         if (deck.size() != 8)
+        {
+            log.error("deck size can't be greater than 8, current size:{}",deck.size());
             return false;
+        }
 
         long heroCount = deck.stream().filter(c -> Boolean.TRUE.equals(c.getIsHero())).count();
         if (heroCount > 1)
+        {
+            log.error("Hero count can't be greater then 1, current:{}",heroCount);
             return false;
+        }
 
         long evolvedCount = deck.stream().filter(c -> Boolean.TRUE.equals(c.getEvolved())).count();
         if (evolvedCount > 2)
+        {
+            log.error("Evolved card count can't be greater then 2, current:{}",evolvedCount);
             return false;
-
+        }
         return true;
     }
 

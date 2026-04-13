@@ -1,7 +1,7 @@
 package com.deftgray.clashproxy.service;
 
+import com.deftgray.clashproxy.dto.LlmDeckSuggestion;
 import com.deftgray.clashproxy.dto.SimplifiedCard;
-import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
@@ -33,7 +33,7 @@ public class LlmService {
     @org.springframework.beans.factory.annotation.Value("${openrouter.model}")
     private String modelName;
 
-    public com.deftgray.clashproxy.dto.LlmDeckSuggestion generateDeckRecommendation(List<SimplifiedCard> cards) {
+    public LlmDeckSuggestion generateDeckRecommendation(List<SimplifiedCard> cards) {
         if (apiKey == null || apiKey.isEmpty()) {
             apiKey = " ";
             log.warn("Using hardcoded API key (NOT RECOMMENDED for production)");
@@ -55,7 +55,14 @@ public class LlmService {
                 "model", modelName,
                 "messages", List.of(
                         Map.of("role", "system", "content",
-                                "You are a Clash Royale expert. Build the best deck (8 cards) from the provided list. Rules: Max 1 Hero/Champion. Max 2 Evolved cards. Return ONLY a JSON object with keys: 'cards' (array of objects with keys: 'name', 'isEvolved' (boolean), 'isHero' (boolean), 'level' (integer)), 'strategy' (string, MUST be one of: 'Beatdown', 'Control', 'Cycle', 'Bait', 'Siege', 'Bridge Spam', 'Split Lane', 'Hybrid'), and 'tactic' (string, explanation of how to play). No markdown."),
+                                "You are a Clash Royale expert. Build the best deck (8 cards) from the provided list.\n"
+                                        +
+                                        "ABSOLUTE STRICT RULES THAT CANNOT BE BROKEN:\n" +
+                                        "1. Exactly ONE card can have \"isHero\": true. The other 7 MUST have \"isHero\": false.\n"
+                                        +
+                                        "2. A MAXIMUM of TWO cards can have \"isEvolved\": true. The rest MUST have \"isEvolved\": false.\n"
+                                        +
+                                        "Return ONLY a JSON object with keys: 'cards' (array of objects with keys: 'name', 'isEvolved' (boolean), 'isHero' (boolean), 'level' (integer)), 'strategy' (string, MUST be one of: 'Beatdown', 'Control', 'Cycle', 'Bait', 'Siege', 'Bridge Spam', 'Split Lane', 'Hybrid'), and 'tactic' (string, explanation of how to play). No markdown."),
                         Map.of("role", "user", "content", prompt)));
 
         HttpEntity<Map<String, Object>> entity = new HttpEntity<>(body, headers);
@@ -101,7 +108,10 @@ public class LlmService {
                         Map.of("role", "system", "content",
                                 "You are a Clash Royale expert. Complete the deck to 8 cards using the player's collection. Respect the user's selected playstyle: "
                                         + playStyle
-                                        + ". Return ONLY a JSON object with keys: 'cards' (array of objects with keys: 'name', 'isEvolved' (boolean), 'isHero' (boolean), 'level' (integer)), 'strategy' (string enum), and 'tactic' (string)."),
+                                        + ".\nABSOLUTE STRICT RULES THAT CANNOT BE BROKEN:\n"
+                                        + "1. Exactly ONE card can have \"isHero\": true in the ENTIRE DECK. The other 7 MUST have \"isHero\": false.\n"
+                                        + "2. A MAXIMUM of TWO cards can have \"isEvolved\": true in the ENTIRE DECK. The rest MUST have \"isEvolved\": false.\n"
+                                        + "Return ONLY a JSON object with keys: 'cards' (array of objects with keys: 'name', 'isEvolved' (boolean), 'isHero' (boolean), 'level' (integer)), 'strategy' (string enum), and 'tactic' (string)."),
                         Map.of("role", "user", "content", prompt)));
 
         HttpEntity<Map<String, Object>> entity = new HttpEntity<>(body, headers);

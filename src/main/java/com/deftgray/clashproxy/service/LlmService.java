@@ -1,7 +1,7 @@
 package com.deftgray.clashproxy.service;
 
+import com.deftgray.clashproxy.dto.LlmDeckSuggestion;
 import com.deftgray.clashproxy.dto.SimplifiedCard;
-import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
@@ -33,12 +33,10 @@ public class LlmService {
     @org.springframework.beans.factory.annotation.Value("${openrouter.model}")
     private String modelName;
 
-    public com.deftgray.clashproxy.dto.LlmDeckSuggestion generateDeckRecommendation(List<SimplifiedCard> cards) {
+    public LlmDeckSuggestion generateDeckRecommendation(List<SimplifiedCard> cards, Integer bestTrophies) {
         if (apiKey == null || apiKey.isEmpty()) {
             apiKey = " ";
             log.warn("Using hardcoded API key (NOT RECOMMENDED for production)");
-            // throw new IllegalStateException("OPENROUTER_API_KEY environment variable is
-            // not set");
         }
 
         String prompt = createPrompt(cards);
@@ -47,15 +45,13 @@ public class LlmService {
         HttpHeaders headers = new HttpHeaders();
         headers.setBearerAuth(apiKey);
         headers.setContentType(MediaType.APPLICATION_JSON);
-        // headers.set("HTTP-Referer", "http://localhost:8080"); // Optional for
-        // OpenRouter
-        // headers.set("X-Title", "ClashProxy"); // Optional for OpenRouter
+
+        String systemContent = getSystemPromptBase(bestTrophies, false, null);
 
         Map<String, Object> body = Map.of(
                 "model", modelName,
                 "messages", List.of(
-                        Map.of("role", "system", "content",
-                                "You are a Clash Royale expert. Build the best deck (8 cards) from the provided list. Rules: Max 1 Hero/Champion. Max 2 Evolved cards. Return ONLY a JSON object with keys: 'cards' (array of objects with keys: 'name', 'isEvolved' (boolean), 'isHero' (boolean), 'level' (integer)), 'strategy' (string, MUST be one of: 'Beatdown', 'Control', 'Cycle', 'Bait', 'Siege', 'Bridge Spam', 'Split Lane', 'Hybrid'), and 'tactic' (string, explanation of how to play). No markdown."),
+                        Map.of("role", "system", "content", systemContent),
                         Map.of("role", "user", "content", prompt)));
 
         HttpEntity<Map<String, Object>> entity = new HttpEntity<>(body, headers);
@@ -66,23 +62,27 @@ public class LlmService {
             return parseResponse(response);
         } catch (Exception e) {
             log.error("Error calling OpenRouter API", e);
-            e.printStackTrace();
             return null;
         }
     }
 
     private String createPrompt(List<SimplifiedCard> cards) {
         String cardList = cards.stream()
+                .sorted((c1, c2) -> Integer.compare(c2.getLevel() != null ? c2.getLevel() : 0, 
+                                                    c1.getLevel() != null ? c1.getLevel() : 0))
                 .map(c -> String.format("%s (Lvl: %d, Evo: %s, Hero: %s)", c.getName(), c.getLevel(), c.isEvolved(),
                         c.isHero()))
                 .collect(Collectors.joining("\n"));
 
-        return "Here is my collection of cards:\n" + cardList
-                + "\n\nPick 8 cards for a balanced deck. Maximize card levels. Ensure valid deck composition.";
+        return "Here is my collection of cards, sorted by level (highest first):\n" + cardList
+                + "\n\nPick 8 cards for a balanced, competitive deck. \n"
+                + "CRITICAL REQUIREMENT - BALANCE SYNERGY AND LEVELS:\n"
+                + "1. DECK SYNERGY IS PARAMOUNT: The deck must have a clear win condition, good defense, and spell support. Do not blindly pick all high-level cards if they ruin the synergy.\n"
+                + "2. MAXIMIZE LEVELS WITHIN SYNERGY: Whenever you have multiple viable cards for a slot that fit the deck's archetype, YOU MUST select the one with the highest level (13, 14, 15). Avoid level 9-10 cards if a level 14 viable alternative exists.";
     }
 
-    public com.deftgray.clashproxy.dto.LlmDeckSuggestion generateDeckCompletion(List<SimplifiedCard> collection,
-            List<String> currentDeckNames, String playStyle) {
+    public LlmDeckSuggestion generateDeckCompletion(List<SimplifiedCard> collection,
+            List<String> currentDeckNames, String playStyle, Integer bestTrophies) {
         if (apiKey == null || apiKey.isEmpty()) {
             apiKey = " ";
             log.warn("Using hardcoded API key (NOT RECOMMENDED for production)");
@@ -95,13 +95,12 @@ public class LlmService {
         headers.setBearerAuth(apiKey);
         headers.setContentType(MediaType.APPLICATION_JSON);
 
+        String systemContent = getSystemPromptBase(bestTrophies, true, playStyle);
+
         Map<String, Object> body = Map.of(
                 "model", modelName,
                 "messages", List.of(
-                        Map.of("role", "system", "content",
-                                "You are a Clash Royale expert. Complete the deck to 8 cards using the player's collection. Respect the user's selected playstyle: "
-                                        + playStyle
-                                        + ". Return ONLY a JSON object with keys: 'cards' (array of objects with keys: 'name', 'isEvolved' (boolean), 'isHero' (boolean), 'level' (integer)), 'strategy' (string enum), and 'tactic' (string)."),
+                        Map.of("role", "system", "content", systemContent),
                         Map.of("role", "user", "content", prompt)));
 
         HttpEntity<Map<String, Object>> entity = new HttpEntity<>(body, headers);
@@ -112,7 +111,6 @@ public class LlmService {
             return parseResponse(response);
         } catch (Exception e) {
             log.error("Error calling OpenRouter API", e);
-            e.printStackTrace();
             return null;
         }
     }
@@ -120,19 +118,77 @@ public class LlmService {
     private String createCompletionPrompt(List<SimplifiedCard> collection, List<String> currentDeckNames,
             String playStyle) {
         String cardList = collection.stream()
+                .sorted((c1, c2) -> Integer.compare(c2.getLevel() != null ? c2.getLevel() : 0, 
+                                                    c1.getLevel() != null ? c1.getLevel() : 0))
                 .map(c -> String.format("%s (Lvl: %d, Evo: %s, Hero: %s)", c.getName(), c.getLevel(), c.isEvolved(),
                         c.isHero()))
                 .collect(Collectors.joining("\n"));
 
         String alreadySelected = String.join(", ", currentDeckNames);
 
-        return "Here is my collection of cards:\n" + cardList
+        return "Here is my collection of cards, sorted by level (highest first):\n" + cardList
                 + "\n\nI want to build a '" + playStyle + "' deck."
                 + "\nI have ALREADY selected these cards: " + alreadySelected
-                + "\nPlease pick the remaining cards from my collection to form a complete, competitive 8-card deck. Ensure the final deck includes the cards I selected.";
+                + "\nPlease pick the remaining cards from my collection to form a complete, competitive 8-card deck. Ensure the final deck includes the cards I selected.\n"
+                + "CRITICAL REQUIREMENT - BALANCE SYNERGY AND LEVELS:\n"
+                + "1. SYNERGY FIRST: Make sure the final deck has excellent synergy for a " + playStyle + " archetype.\n"
+                + "2. LEVELS SECOND: When deciding between two cards that both fit the synergy, YOU MUST pick the one with the higher level (13, 14, 15). Avoid adding low-level cards if a high-level alternative exists that preserves the deck's power.";
     }
 
-    private com.deftgray.clashproxy.dto.LlmDeckSuggestion parseResponse(String jsonResponse) {
+    private String getSystemPromptBase(Integer bestTrophies, boolean isCompletion, String playStyle) {
+        int trophies = bestTrophies != null ? bestTrophies : 0;
+        int evoLimit = trophies < 3000 ? 1 : 2;
+        int heroLimit = trophies < 3000 ? 1 : 2;
+        int totalLimit = trophies < 3000 ? 2 : 3;
+
+        String constraints = 
+            "- MAXIMUM Evolutions Allowed: " + evoLimit + "\n" +
+            "- MAXIMUM Heroes Allowed: " + heroLimit + "\n" +
+            "- TOTAL SPECIAL CARDS (Heroes + Evolutions combined): " + totalLimit + "\n";
+
+        String coreInstructions = 
+              "1. STEP 1: Decide which cards to evolve. List their names in the 'selected_evolutions' array. Its length MUST NOT exceed the Maximum Evolutions Allowed.\n"
+            + "2. STEP 2: Decide your heroes. List their names in the 'selected_heroes' array. Its length MUST NOT exceed the Maximum Heroes Allowed.\n"
+            + "3. STEP 3: Verify that the sum of lengths of both arrays does NOT exceed the TOTAL SPECIAL CARDS limit.\n"
+            + "4. STEP 4: Build exactly 8 cards. ONLY set 'isEvolved': true if the card is in 'selected_evolutions'.\n"
+            + "5. ONLY evolve cards if the player collection indicates they have it unlocked (Evo: true or Level covers it).\n";
+
+        String jsonFormat = 
+              "Return ONLY a raw JSON object string with no markdown (no ```json). Format:\n"
+            + "{\n"
+            + "  \"selected_evolutions\": [\"CardName1\"],\n"
+            + "  \"selected_heroes\": [],\n"
+            + "  \"cards\": [ {\"name\": \"...\", \"isEvolved\": true/false, \"isHero\": true/false, \"level\": 14} ],\n"
+            + "  \"strategy\": \"Beatdown | Control | Cycle | Bait | Siege | Bridge Spam | Split Lane | Hybrid\",\n"
+            + "  \"tactic\": \"Explanation...\"\n"
+            + "}";
+
+        if (isCompletion) {
+            constraints += "These limits apply to the ENTIRE FINAL DECK, including cards already selected.\n";
+            return "You are an elite Clash Royale Deck Building AI.\n\n"
+                 + "YOUR TASK:\n"
+                 + "Complete the deck to precisely 8 cards using the player's collection.\n"
+                 + "Respect this playstyle: " + playStyle + ".\n\n"
+                 + "ABSOLUTE STRICT CONSTRAINTS:\n"
+                 + constraints
+                 + "\nINSTRUCTIONS:\n"
+                 + coreInstructions
+                 + "\nOUTPUT FORMAT:\n"
+                 + jsonFormat;
+        } else {
+            return "You are an elite Clash Royale Deck Building AI.\n\n"
+                 + "YOUR TASK:\n"
+                 + "Select exactly 8 cards from the provided collection to form a competitive deck.\n\n"
+                 + "ABSOLUTE STRICT CONSTRAINTS:\n"
+                 + constraints
+                 + "\nINSTRUCTIONS:\n"
+                 + coreInstructions
+                 + "\nOUTPUT FORMAT:\n"
+                 + jsonFormat;
+        }
+    }
+
+    private LlmDeckSuggestion parseResponse(String jsonResponse) {
         try {
             JsonNode root = objectMapper.readTree(jsonResponse);
 
@@ -158,7 +214,7 @@ public class LlmService {
 
                 // Clean up code blocks if present (some LLMs add ```json ... ```)
                 content = content.replaceAll("```json", "").replaceAll("```", "").trim();
-                return objectMapper.readValue(content, com.deftgray.clashproxy.dto.LlmDeckSuggestion.class);
+                return objectMapper.readValue(content, LlmDeckSuggestion.class);
             }
 
             log.error("Invalid response structure: {}", jsonResponse);

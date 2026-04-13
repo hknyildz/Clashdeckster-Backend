@@ -1,9 +1,11 @@
 package com.deftgray.clashproxy.controller;
 
+import com.deftgray.clashproxy.dto.ClashApiResponse;
 import com.deftgray.clashproxy.dto.DeckCompletionRequest;
 import com.deftgray.clashproxy.dto.DeckResponse;
 import com.deftgray.clashproxy.model.Card;
 import com.deftgray.clashproxy.service.ClashService;
+import com.deftgray.clashproxy.service.DeckService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.web.bind.annotation.*;
@@ -18,10 +20,10 @@ public class Controller {
 
     private final ClashService clashService;
 
-    private final com.deftgray.clashproxy.service.DeckService deckService;
+    private final DeckService deckService;
 
     @GetMapping("/player/{tag}")
-    public List<Card> getPlayerCards(@PathVariable String tag) {
+    public ClashApiResponse getPlayerCards(@PathVariable String tag) {
         log.info("Received request for player cards with tag: {}", tag);
         return clashService.getPlayerCards(tag);
     }

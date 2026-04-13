@@ -2,7 +2,7 @@ package com.deftgray.clashproxy.service;
 
 import com.deftgray.clashproxy.dto.CardDto;
 import com.deftgray.clashproxy.dto.CardListResponse;
-import com.deftgray.clashproxy.dto.ClashApıResponse;
+import com.deftgray.clashproxy.dto.ClashApiResponse;
 import com.deftgray.clashproxy.model.Card;
 
 import org.springframework.http.HttpEntity;
@@ -26,10 +26,9 @@ public class ClashService {
     @org.springframework.beans.factory.annotation.Value("${clash.api.token}")
     private String apiToken;
 
-    public ClashService() {
-    }
+    private List<Card> cachedCards;
 
-    public List<Card> getPlayerCards(String playerTag) {
+    public ClashApiResponse getPlayerCards(String playerTag) {
         String url = "https://api.clashroyale.com/v1/players/{tag}";
 
         HttpHeaders headers = new HttpHeaders();
@@ -37,25 +36,15 @@ public class ClashService {
         HttpEntity<String> entity = new HttpEntity<>(headers);
 
         try {
-            ResponseEntity<ClashApıResponse> response = restTemplate.exchange(url, HttpMethod.GET, entity,
-                    ClashApıResponse.class, playerTag);
-            System.out.println(response);
-            ClashApıResponse player = response.getBody();
-
-            if (player == null || player.getCards() == null) {
-                return new ArrayList<>();
-            }
-
-            return player.getCards().stream()
-                    .map(this::mapToCard)
-                    .toList();
+            ResponseEntity<ClashApiResponse> response = restTemplate.exchange(url, HttpMethod.GET, entity,
+                    ClashApiResponse.class, playerTag);
+            log.debug("Successfully fetched cards for player: {}", playerTag);
+            return response.getBody();
         } catch (Exception e) {
-            e.printStackTrace();
-            return new ArrayList<>();
+            log.error("Error fetching player cards for tag: {}", playerTag, e);
+            return null;
         }
     }
-
-    private List<Card> cachedCards;
 
     public List<Card> getAllCards() {
         if (cachedCards != null && !cachedCards.isEmpty()) {
@@ -89,12 +78,12 @@ public class ClashService {
             this.cachedCards = cards;
             return cards;
         } catch (Exception e) {
-            e.printStackTrace();
+            log.error("Error fetching all cards from Clash API", e);
             return new ArrayList<>();
         }
     }
 
-    private Card mapToCard(CardDto dto) {
+    public Card mapToCard(CardDto dto) {
         Card card = new Card();
         card.setName(dto.getName());
 

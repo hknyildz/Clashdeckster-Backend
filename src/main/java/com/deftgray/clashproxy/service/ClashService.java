@@ -129,37 +129,32 @@ public class ClashService {
 
         // Map Icon URLs
         if (dto.getIconUrls() != null) {
-            card.setImageUri(dto.getIconUrls().getMedium());
-            card.setImageUriEvolved(dto.getIconUrls().getEvolutionMedium());
-            card.setImageUriHero(dto.getIconUrls().getHeroMedium());
+            String mediumUrl = dto.getIconUrls().getMedium();
+            card.setImageUri(mediumUrl);
+            
+            String evoUrl = dto.getIconUrls().getEvolutionMedium();
+            String heroUrl = dto.getIconUrls().getHeroMedium();
+            
+            // Fallbacks: If Evolution is null, try Hero (some cards like Barbarian Barrel put evo url there).
+            card.setImageUriEvolved(evoUrl != null ? evoUrl : (heroUrl != null ? heroUrl : mediumUrl));
+            
+            card.setImageUriHero(heroUrl != null ? heroUrl : (evoUrl != null ? evoUrl : mediumUrl));
         }
 
-        // Logic for isHero and evolved
         boolean isHero = false;
+        if (dto.getRarity() != null && dto.getRarity().equalsIgnoreCase("champion")) {
+            isHero = true;
+        } else if (dto.getIconUrls() != null && dto.getIconUrls().getHeroMedium() != null) {
+            isHero = true;
+        }
+        
         boolean evolved = false;
-
-        Integer maxEvo = dto.getMaxEvolutionLevel();
-        Integer currentEvo = dto.getEvolutionLevel();
-
-        if (maxEvo != null && maxEvo == 3) {
-            if (currentEvo != null) {
-                if (currentEvo == 3) {
-                    isHero = true;
-                    evolved = true;
-                } else if (currentEvo == 2) {
-                    isHero = true;
-                    evolved = false;
-                } else if (currentEvo == 1) {
-                    isHero = false;
-                    evolved = true;
-                }
-            }
-        } else {
-            // Default logic if not specifically maxEvo 3 (e.g. Archers maxEvo 1)
-            // If it has evolution level coverage, assume evolved if level > 0
-            if (currentEvo != null && currentEvo > 0) {
-                evolved = true;
-            }
+        if (dto.getIconUrls() != null && dto.getIconUrls().getEvolutionMedium() != null) {
+            evolved = true;
+        } else if (dto.getMaxEvolutionLevel() != null && dto.getMaxEvolutionLevel() > 0) {
+            evolved = true;
+        } else if (dto.getEvolutionLevel() != null && dto.getEvolutionLevel() > 0) {
+            evolved = true;
         }
 
         card.setIsHero(isHero);

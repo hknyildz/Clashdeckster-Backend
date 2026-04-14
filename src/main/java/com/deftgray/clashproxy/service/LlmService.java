@@ -68,8 +68,8 @@ public class LlmService {
 
     private String createPrompt(List<SimplifiedCard> cards) {
         String cardList = cards.stream()
-                .sorted((c1, c2) -> Integer.compare(c2.getLevel() != null ? c2.getLevel() : 0, 
-                                                    c1.getLevel() != null ? c1.getLevel() : 0))
+                .sorted((c1, c2) -> Integer.compare(c2.getLevel() != null ? c2.getLevel() : 0,
+                        c1.getLevel() != null ? c1.getLevel() : 0))
                 .map(c -> String.format("%s (Lvl: %d, Evo: %s, Hero: %s)", c.getName(), c.getLevel(), c.isEvolved(),
                         c.isHero()))
                 .collect(Collectors.joining("\n"));
@@ -78,7 +78,7 @@ public class LlmService {
                 + "\n\nPick 8 cards for a balanced, competitive deck. \n"
                 + "CRITICAL REQUIREMENT - BALANCE SYNERGY AND LEVELS:\n"
                 + "1. DECK SYNERGY IS PARAMOUNT: The deck must have a clear win condition, good defense, and spell support. Do not blindly pick all high-level cards if they ruin the synergy.\n"
-                + "2. MAXIMIZE LEVELS WITHIN SYNERGY: Whenever you have multiple viable cards for a slot that fit the deck's archetype, YOU MUST select the one with the highest level (13, 14, 15). Avoid level 9-10 cards if a level 14 viable alternative exists.";
+                + "2. MAXIMIZE LEVELS WITHIN SYNERGY: Whenever you have multiple viable cards for a slot that fit the deck's archetype, YOU MUST select the one with the highest level (16, 15, 14, 13). Avoid level 9-10 cards if a level 14,15,16 viable alternative exists.";
     }
 
     public LlmDeckSuggestion generateDeckCompletion(List<SimplifiedCard> collection,
@@ -118,8 +118,8 @@ public class LlmService {
     private String createCompletionPrompt(List<SimplifiedCard> collection, List<String> currentDeckNames,
             String playStyle) {
         String cardList = collection.stream()
-                .sorted((c1, c2) -> Integer.compare(c2.getLevel() != null ? c2.getLevel() : 0, 
-                                                    c1.getLevel() != null ? c1.getLevel() : 0))
+                .sorted((c1, c2) -> Integer.compare(c2.getLevel() != null ? c2.getLevel() : 0,
+                        c1.getLevel() != null ? c1.getLevel() : 0))
                 .map(c -> String.format("%s (Lvl: %d, Evo: %s, Hero: %s)", c.getName(), c.getLevel(), c.isEvolved(),
                         c.isHero()))
                 .collect(Collectors.joining("\n"));
@@ -131,7 +131,8 @@ public class LlmService {
                 + "\nI have ALREADY selected these cards: " + alreadySelected
                 + "\nPlease pick the remaining cards from my collection to form a complete, competitive 8-card deck. Ensure the final deck includes the cards I selected.\n"
                 + "CRITICAL REQUIREMENT - BALANCE SYNERGY AND LEVELS:\n"
-                + "1. SYNERGY FIRST: Make sure the final deck has excellent synergy for a " + playStyle + " archetype.\n"
+                + "1. SYNERGY FIRST: Make sure the final deck has excellent synergy for a " + playStyle
+                + " archetype.\n"
                 + "2. LEVELS SECOND: When deciding between two cards that both fit the synergy, YOU MUST pick the one with the higher level (13, 14, 15). Avoid adding low-level cards if a high-level alternative exists that preserves the deck's power.";
     }
 
@@ -141,50 +142,47 @@ public class LlmService {
         int heroLimit = trophies < 3000 ? 1 : 2;
         int totalLimit = trophies < 3000 ? 2 : 3;
 
-        String constraints = 
-            "- MAXIMUM Evolutions Allowed: " + evoLimit + "\n" +
-            "- MAXIMUM Heroes Allowed: " + heroLimit + "\n" +
-            "- TOTAL SPECIAL CARDS (Heroes + Evolutions combined): " + totalLimit + "\n";
+        String constraints = "- MAXIMUM Evolutions Allowed: " + evoLimit + "\n" +
+                "- MAXIMUM Heroes Allowed: " + heroLimit + "\n" +
+                "- TOTAL SPECIAL CARDS (Heroes + Evolutions combined): " + totalLimit + "\n";
 
-        String coreInstructions = 
-              "1. STEP 1: Decide which cards to evolve. List their names in the 'selected_evolutions' array. Its length MUST NOT exceed the Maximum Evolutions Allowed.\n"
-            + "2. STEP 2: Decide your heroes. List their names in the 'selected_heroes' array. Its length MUST NOT exceed the Maximum Heroes Allowed.\n"
-            + "3. STEP 3: Verify that the sum of lengths of both arrays does NOT exceed the TOTAL SPECIAL CARDS limit.\n"
-            + "4. STEP 4: Build exactly 8 cards. ONLY set 'isEvolved': true if the card is in 'selected_evolutions'.\n"
-            + "5. ONLY evolve cards if the player collection indicates they have it unlocked (Evo: true or Level covers it).\n";
+        String coreInstructions = "1. STEP 1: Decide which cards to evolve. List their names in the 'selected_evolutions' array. Its length MUST NOT exceed the Maximum Evolutions Allowed.\n"
+                + "2. STEP 2: Decide your heroes. List their names in the 'selected_heroes' array. Its length MUST NOT exceed the Maximum Heroes Allowed.\n"
+                + "3. STEP 3: Verify that the sum of lengths of both arrays does NOT exceed the TOTAL SPECIAL CARDS limit.\n"
+                + "4. STEP 4: Build exactly 8 cards. ONLY set 'isEvolved': true if the card is in 'selected_evolutions'.\n"
+                + "5. ONLY evolve cards if the player collection indicates they have it unlocked (Evo: true or Level covers it).\n";
 
-        String jsonFormat = 
-              "Return ONLY a raw JSON object string with no markdown (no ```json). Format:\n"
-            + "{\n"
-            + "  \"selected_evolutions\": [\"CardName1\"],\n"
-            + "  \"selected_heroes\": [],\n"
-            + "  \"cards\": [ {\"name\": \"...\", \"isEvolved\": true/false, \"isHero\": true/false, \"level\": 14} ],\n"
-            + "  \"strategy\": \"Beatdown | Control | Cycle | Bait | Siege | Bridge Spam | Split Lane | Hybrid\",\n"
-            + "  \"tactic\": \"Explanation...\"\n"
-            + "}";
+        String jsonFormat = "Return ONLY a raw JSON object string with no markdown (no ```json). Format:\n"
+                + "{\n"
+                + "  \"selected_evolutions\": [\"CardName1\"],\n"
+                + "  \"selected_heroes\": [],\n"
+                + "  \"cards\": [ {\"name\": \"...\", \"isEvolved\": true/false, \"isHero\": true/false, \"level\": 14} ],\n"
+                + "  \"strategy\": \"Beatdown | Control | Cycle | Bait | Siege | Bridge Spam | Split Lane | Hybrid\",\n"
+                + "  \"tactic\": \"Explanation...\"\n"
+                + "}";
 
         if (isCompletion) {
             constraints += "These limits apply to the ENTIRE FINAL DECK, including cards already selected.\n";
             return "You are an elite Clash Royale Deck Building AI.\n\n"
-                 + "YOUR TASK:\n"
-                 + "Complete the deck to precisely 8 cards using the player's collection.\n"
-                 + "Respect this playstyle: " + playStyle + ".\n\n"
-                 + "ABSOLUTE STRICT CONSTRAINTS:\n"
-                 + constraints
-                 + "\nINSTRUCTIONS:\n"
-                 + coreInstructions
-                 + "\nOUTPUT FORMAT:\n"
-                 + jsonFormat;
+                    + "YOUR TASK:\n"
+                    + "Complete the deck to precisely 8 cards using the player's collection.\n"
+                    + "Respect this playstyle: " + playStyle + ".\n\n"
+                    + "ABSOLUTE STRICT CONSTRAINTS:\n"
+                    + constraints
+                    + "\nINSTRUCTIONS:\n"
+                    + coreInstructions
+                    + "\nOUTPUT FORMAT:\n"
+                    + jsonFormat;
         } else {
             return "You are an elite Clash Royale Deck Building AI.\n\n"
-                 + "YOUR TASK:\n"
-                 + "Select exactly 8 cards from the provided collection to form a competitive deck.\n\n"
-                 + "ABSOLUTE STRICT CONSTRAINTS:\n"
-                 + constraints
-                 + "\nINSTRUCTIONS:\n"
-                 + coreInstructions
-                 + "\nOUTPUT FORMAT:\n"
-                 + jsonFormat;
+                    + "YOUR TASK:\n"
+                    + "Select exactly 8 cards from the provided collection to form a competitive deck.\n\n"
+                    + "ABSOLUTE STRICT CONSTRAINTS:\n"
+                    + constraints
+                    + "\nINSTRUCTIONS:\n"
+                    + coreInstructions
+                    + "\nOUTPUT FORMAT:\n"
+                    + jsonFormat;
         }
     }
 
@@ -212,8 +210,15 @@ public class LlmService {
                     return null;
                 }
 
-                // Clean up code blocks if present (some LLMs add ```json ... ```)
-                content = content.replaceAll("```json", "").replaceAll("```", "").trim();
+                int startIndex = content.indexOf("{");
+                int endIndex = content.lastIndexOf("}");
+                if (startIndex != -1 && endIndex != -1 && startIndex <= endIndex) {
+                    content = content.substring(startIndex, endIndex + 1);
+                } else {
+                    log.error("Could not find raw JSON object in the LLM response. Content: {}", content);
+                    return null;
+                }
+                
                 return objectMapper.readValue(content, LlmDeckSuggestion.class);
             }
 

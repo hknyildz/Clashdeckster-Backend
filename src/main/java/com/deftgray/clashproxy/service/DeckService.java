@@ -34,8 +34,24 @@ public class DeckService {
             return DeckResponse.builder().valid(false).strategy("N/A")
                     .tacticMessage("Player not found or no cards available.").build();
         }
+        List<Card> cachedAllCards = clashService.getAllCards();
         List<Card> allCards = playerResponse.getCards().stream()
-                .map(clashService::mapToCard)
+                .map(dto -> {
+                    Card playerCard = clashService.mapToCard(dto);
+                    Card fullCard = cachedAllCards.stream()
+                        .filter(c -> c.getId() != null && c.getId().equals(playerCard.getId()))
+                        .findFirst().orElse(null);
+                        
+                    if (fullCard != null) {
+                        playerCard.setElixirCost(fullCard.getElixirCost());
+                        playerCard.setImageUri(fullCard.getImageUri());
+                        playerCard.setImageUriEvolved(fullCard.getImageUriEvolved());
+                        playerCard.setImageUriHero(fullCard.getImageUriHero());
+                        playerCard.setType(fullCard.getType());
+                        playerCard.setRarity(fullCard.getRarity());
+                    }
+                    return playerCard;
+                })
                 .toList();
         log.info("Found {} cards for player", allCards.size());
 
@@ -129,11 +145,26 @@ public class DeckService {
         if (playerResponse == null || playerResponse.getCards() == null || playerResponse.getCards().isEmpty()) {
             return DeckResponse.builder().valid(false).tacticMessage("Player cards not found.").build();
         }
-        List<Card> playerCards = playerResponse.getCards().stream()
-                .map(clashService::mapToCard)
-                .toList();
-
         List<Card> allCards = clashService.getAllCards();
+        
+        List<Card> playerCards = playerResponse.getCards().stream()
+                .map(dto -> {
+                    Card playerCard = clashService.mapToCard(dto);
+                    Card fullCard = allCards.stream()
+                        .filter(c -> c.getId() != null && c.getId().equals(playerCard.getId()))
+                        .findFirst().orElse(null);
+                        
+                    if (fullCard != null) {
+                        playerCard.setElixirCost(fullCard.getElixirCost());
+                        playerCard.setImageUri(fullCard.getImageUri());
+                        playerCard.setImageUriEvolved(fullCard.getImageUriEvolved());
+                        playerCard.setImageUriHero(fullCard.getImageUriHero());
+                        playerCard.setType(fullCard.getType());
+                        playerCard.setRarity(fullCard.getRarity());
+                    }
+                    return playerCard;
+                })
+                .toList();
 
         // 2. Process Partial Deck & Substitutions
         List<Card> forcedUpdates = new ArrayList<>();

@@ -1,5 +1,6 @@
 package com.deftgray.clashproxy.service;
 
+import com.deftgray.clashproxy.dto.CardDto;
 import com.deftgray.clashproxy.dto.ClashApiResponse;
 import com.deftgray.clashproxy.dto.LlmDeckSuggestion;
 import com.deftgray.clashproxy.model.Card;
@@ -65,10 +66,11 @@ public class DeckService {
                 .collect(Collectors.toMap(Card::getName, Function.identity(), (a, b) -> a)); // Handle duplicates if any
 
         // 3. Retry Loop
+        List<CardDto> supportCards = playerResponse.getSupportCards();
         for (int i = 0; i < MAX_RETRIES; i++) {
             log.info("Attempt {}/{} to generate deck via LLM", i + 1, MAX_RETRIES);
             LlmDeckSuggestion suggestion = llmService
-                    .generateDeckRecommendation(simplifiedCards, playerResponse.getBestTrophies());
+                    .generateDeckRecommendation(simplifiedCards, playerResponse.getBestTrophies(), supportCards);
 
             if (suggestion == null || suggestion.getCards() == null || suggestion.getCards().isEmpty()) {
                 log.error("LLM returned empty suggestion");
@@ -102,28 +104,7 @@ public class DeckService {
             // 4. Validate
             if (isValidDeck(deck, playerResponse.getBestTrophies())) {
                 log.info("Valid deck generated: {}", suggestion.getStrategy());
-
-                double avgElixir = deck.stream()
-                        .mapToInt(c -> c.getElixirCost() != null ? c.getElixirCost() : 0)
-                        .average().orElse(0.0);
-
-                // Format:
-                // https://link.clashroyale.com/en/?clashroyale://copyDeck?deck=id;id;id;id;id;id;id;id
-                String cardIds = deck.stream()
-                        .map(c -> String.valueOf(c.getId()))
-                        .collect(Collectors.joining(";"));
-                // Using the user-verified format which seems to wrap the deep link schema
-                String deepLink = "https://link.clashroyale.com/en/?clashroyale://copyDeck?deck=" + cardIds
-                        + "&l=Royals";
-
-                return DeckResponse.builder()
-                        .deck(deck)
-                        .valid(true)
-                        .strategy(suggestion.getStrategy())
-                        .tacticMessage(suggestion.getTactic())
-                        .averageElixir(Math.round(avgElixir * 10.0) / 10.0) // Round to 1 decimal place
-                        .deepLink(deepLink)
-                        .build();
+                return buildResponse(deck, suggestion, supportCards);
             }
             log.warn("Generated deck validation failed.");
             // If invalid, loop again
@@ -196,9 +177,10 @@ public class DeckService {
         List<SimplifiedCard> simplifiedCollection = playerCards.stream().map(this::toSimplified).toList();
 
         // Retry Loop
+        List<CardDto> supportCards = playerResponse.getSupportCards();
         for (int i = 0; i < MAX_RETRIES; i++) {
             LlmDeckSuggestion suggestion = llmService.generateDeckCompletion(
-                    simplifiedCollection, forcedNames, request.getPlayStyle(), playerResponse.getBestTrophies());
+                    simplifiedCollection, forcedNames, request.getPlayStyle(), playerResponse.getBestTrophies(), supportCards);
 
             if (suggestion == null || suggestion.getCards() == null)
                 continue;
@@ -231,7 +213,7 @@ public class DeckService {
             // Validate and potentially mix in forced cards if missing?
             // For MVP, if size != 8, we retry.
             if (isValidDeck(finalDeck,playerResponse.getBestTrophies())) {
-                return buildResponse(finalDeck, suggestion);
+                return buildResponse(finalDeck, suggestion, supportCards);
             }
         }
 
@@ -268,16 +250,82 @@ public class DeckService {
                 .orElse(null);
     }
 
-    private DeckResponse buildResponse(List<Card> deck, LlmDeckSuggestion suggestion) {
+    private DeckResponse buildResponse(List<Card> deck, LlmDeckSuggestion suggestion, List<CardDto> supportCards) {
         double avgElixir = deck.stream()
                 .mapToInt(c -> c.getElixirCost() != null ? c.getElixirCost() : 0)
                 .average().orElse(0.0);
 
-        String cardIds = deck.stream()
+        // Sort for deep link: Evolved first, then Hero, then by elixir cost (matches frontend display order)
+        List<Card> sortedDeck = deck.stream()
+                .sorted((a, b) -> {
+                    int aEvo = Boolean.TRUE.equals(a.getEvolved()) ? 1 : 0;
+                    int bEvo = Boolean.TRUE.equals(b.getEvolved()) ? 1 : 0;
+                    if (aEvo != bEvo) return bEvo - aEvo;
+                    int aHero = Boolean.TRUE.equals(a.getIsHero()) ? 1 : 0;
+                    int bHero = Boolean.TRUE.equals(b.getIsHero()) ? 1 : 0;
+                    if (aHero != bHero) return bHero - aHero;
+                    return Integer.compare(
+                            a.getElixirCost() != null ? a.getElixirCost() : 0,
+                            b.getElixirCost() != null ? b.getElixirCost() : 0);
+                })
+                .toList();
+
+        String cardIds = sortedDeck.stream()
                 .map(c -> String.valueOf(c.getId()))
                 .collect(Collectors.joining(";"));
+
+        // Resolve tower troop
+        Long towerTroopId = null;
+        String towerTroopName = null;
+        String towerTroopImageUrl = null;
+
+        if (suggestion.getSelectedTowerTroop() != null && supportCards != null) {
+            String selectedName = suggestion.getSelectedTowerTroop();
+            CardDto matched = supportCards.stream()
+                    .filter(sc -> sc.getName() != null && sc.getName().equalsIgnoreCase(selectedName))
+                    .findFirst().orElse(null);
+            if (matched != null) {
+                towerTroopId = matched.getId();
+                towerTroopName = matched.getName();
+                if (matched.getIconUrls() != null) {
+                    towerTroopImageUrl = matched.getIconUrls().getMedium();
+                }
+            } else {
+                log.warn("LLM selected tower troop '{}' not found in supportCards, falling back to first", selectedName);
+                // Fallback: pick the highest-level tower troop
+                if (!supportCards.isEmpty()) {
+                    CardDto fallback = supportCards.stream()
+                            .max((a, b) -> Integer.compare(
+                                    a.getLevel() != null ? a.getLevel() : 0,
+                                    b.getLevel() != null ? b.getLevel() : 0))
+                            .orElse(supportCards.get(0));
+                    towerTroopId = fallback.getId();
+                    towerTroopName = fallback.getName();
+                    if (fallback.getIconUrls() != null) {
+                        towerTroopImageUrl = fallback.getIconUrls().getMedium();
+                    }
+                }
+            }
+        } else if (supportCards != null && !supportCards.isEmpty()) {
+            // LLM didn't return a tower troop, fallback to highest level
+            CardDto fallback = supportCards.stream()
+                    .max((a, b) -> Integer.compare(
+                            a.getLevel() != null ? a.getLevel() : 0,
+                            b.getLevel() != null ? b.getLevel() : 0))
+                    .orElse(supportCards.get(0));
+            towerTroopId = fallback.getId();
+            towerTroopName = fallback.getName();
+            if (fallback.getIconUrls() != null) {
+                towerTroopImageUrl = fallback.getIconUrls().getMedium();
+            }
+        }
+
+        // Build deep link with tower troop
         String deepLink = "https://link.clashroyale.com/en/?clashroyale://copyDeck?deck=" + cardIds
                 + "&l=Royals";
+        if (towerTroopId != null) {
+            deepLink += "&tt=" + towerTroopId;
+        }
 
         return DeckResponse.builder()
                 .deck(deck)
@@ -286,6 +334,9 @@ public class DeckService {
                 .tacticMessage(suggestion.getTactic())
                 .averageElixir(Math.round(avgElixir * 10.0) / 10.0)
                 .deepLink(deepLink)
+                .towerTroopId(towerTroopId)
+                .towerTroopName(towerTroopName)
+                .towerTroopImageUrl(towerTroopImageUrl)
                 .build();
     }
 

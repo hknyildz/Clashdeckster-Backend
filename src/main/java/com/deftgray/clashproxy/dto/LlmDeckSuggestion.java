@@ -20,6 +20,9 @@ public class LlmDeckSuggestion {
     private String strategy;
     private String tactic;
 
+    @JsonProperty("selected_tower_troop")
+    private String selectedTowerTroop;
+
     @Data
     @NoArgsConstructor
     @JsonIgnoreProperties(ignoreUnknown = true)

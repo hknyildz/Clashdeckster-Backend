@@ -13,5 +13,6 @@ public class ClashApiResponse {
     private String trophies;
     private Integer bestTrophies;
     private List<CardDto> cards;
+    private List<CardDto> supportCards;
 
 }

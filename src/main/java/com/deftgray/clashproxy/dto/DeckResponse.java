@@ -15,4 +15,7 @@ public class DeckResponse {
     private String tacticMessage;
     private Double averageElixir;
     private String deepLink;
+    private Long towerTroopId;
+    private String towerTroopName;
+    private String towerTroopImageUrl;
 }

@@ -5,6 +5,9 @@ import com.deftgray.clashproxy.dto.CardListResponse;
 import com.deftgray.clashproxy.dto.ClashApiResponse;
 import com.deftgray.clashproxy.model.Card;
 
+import com.github.benmanes.caffeine.cache.Cache;
+import com.github.benmanes.caffeine.cache.Caffeine;
+import jakarta.annotation.PostConstruct;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
@@ -14,6 +17,7 @@ import org.springframework.web.client.RestTemplate;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
 
 import lombok.extern.slf4j.Slf4j;
 
@@ -28,7 +32,28 @@ public class ClashService {
 
     private List<Card> cachedCards;
 
+    // Caffeine cache: player tag -> ClashApiResponse, TTL 5 min, max 3000 entries
+    private Cache<String, ClashApiResponse> playerCache;
+
+    @PostConstruct
+    public void initCache() {
+        playerCache = Caffeine.newBuilder()
+                .expireAfterWrite(5, TimeUnit.MINUTES)
+                .maximumSize(3000)
+                .recordStats()
+                .build();
+        log.info("Player cache initialized: TTL=5min, maxSize=3000");
+    }
+
     public ClashApiResponse getPlayerCards(String playerTag) {
+        // Check cache first
+        ClashApiResponse cached = playerCache.getIfPresent(playerTag);
+        if (cached != null) {
+            log.info("Cache HIT for player: {} ({})", playerTag, cached.getName());
+            return cached;
+        }
+
+        log.info("Cache MISS for player: {}, fetching from Clash API", playerTag);
         String url = "https://api.clashroyale.com/v1/players/{tag}";
 
         HttpHeaders headers = new HttpHeaders();
@@ -38,8 +63,12 @@ public class ClashService {
         try {
             ResponseEntity<ClashApiResponse> response = restTemplate.exchange(url, HttpMethod.GET, entity,
                     ClashApiResponse.class, playerTag);
-            log.debug("Successfully fetched cards for player: {}", playerTag);
-            return response.getBody();
+            ClashApiResponse body = response.getBody();
+            if (body != null) {
+                playerCache.put(playerTag, body);
+                log.info("Cached player data for: {} ({})", playerTag, body.getName());
+            }
+            return body;
         } catch (Exception e) {
             log.error("Error fetching player cards for tag: {}", playerTag, e);
             return null;

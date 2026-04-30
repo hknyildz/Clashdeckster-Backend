@@ -10,7 +10,7 @@
     </parent>
     <groupId>com.deftgray</groupId>
     <artifactId>ClashProxy</artifactId>
-    <version>1.1.1</version>
+    <version>1.2.0</version>
     <name>ClashProxy</name>
     <description>ClashProxy</description>
     <url/>
@@ -51,6 +51,14 @@
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-restclient-test</artifactId>
             <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-cache</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.github.ben-manes.caffeine</groupId>
+            <artifactId>caffeine</artifactId>
         </dependency>
     </dependencies>
 

@@ -59,7 +59,7 @@ public class LlmService {
 
         try {
             String response = restTemplate.postForObject(openRouterUrl, entity, String.class);
-            log.info("Received response from LLM: {}", response);
+            log.info("Received response from LLM: {}", response != null ? response.replaceAll("\\n", "").replaceAll("\\s+", " ").trim() : "null");
             return parseResponse(response);
         } catch (Exception e) {
             log.error("Error calling OpenRouter API", e);
@@ -111,7 +111,7 @@ public class LlmService {
 
         try {
             String response = restTemplate.postForObject(openRouterUrl, entity, String.class);
-            log.info("Received response from LLM: {}", response);
+            log.info("Received response from LLM: {}", response != null ? response.replaceAll("\\n", "").replaceAll("\\s+", " ").trim() : "null");
             return parseResponse(response);
         } catch (Exception e) {
             log.error("Error calling OpenRouter API", e);

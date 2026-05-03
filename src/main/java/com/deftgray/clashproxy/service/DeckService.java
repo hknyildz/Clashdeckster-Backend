@@ -40,9 +40,9 @@ public class DeckService {
                 .map(dto -> {
                     Card playerCard = clashService.mapToCard(dto);
                     Card fullCard = cachedAllCards.stream()
-                        .filter(c -> c.getId() != null && c.getId().equals(playerCard.getId()))
-                        .findFirst().orElse(null);
-                        
+                            .filter(c -> c.getId() != null && c.getId().equals(playerCard.getId()))
+                            .findFirst().orElse(null);
+
                     if (fullCard != null) {
                         playerCard.setElixirCost(fullCard.getElixirCost());
                         playerCard.setImageUri(fullCard.getImageUri());
@@ -87,9 +87,12 @@ public class DeckService {
                     Card originalCard = cardMap.get(name);
 
                     boolean userHasEvolution = Boolean.TRUE.equals(originalCard.getEvolved());
-                    List<String> intendedEvos = suggestion.getSelectedEvolutions() != null ? suggestion.getSelectedEvolutions() : new ArrayList<>();
-                    
-                    // Only grant evolution if user owns it AND the LLM explicitly intended it in the selected_evolutions array
+                    List<String> intendedEvos = suggestion.getSelectedEvolutions() != null
+                            ? suggestion.getSelectedEvolutions()
+                            : new ArrayList<>();
+
+                    // Only grant evolution if user owns it AND the LLM explicitly intended it in
+                    // the selected_evolutions array
                     originalCard.setEvolved(userHasEvolution && intendedEvos.contains(name));
 
                     deck.add(originalCard);
@@ -97,7 +100,6 @@ public class DeckService {
                     log.warn("Suggested card '{}' not found in player's collection", name);
                 }
             }
-
 
             enforceSmartConstraints(deck, playerResponse.getBestTrophies());
 
@@ -114,7 +116,7 @@ public class DeckService {
         return DeckResponse.builder()
                 .valid(false)
                 .strategy("N/A")
-                .tacticMessage("Failed to generate a valid deck after " + MAX_RETRIES + " attempts.")
+                .tacticMessage("Failed to generate a valid deck, please try again.")
                 .build();
     }
 
@@ -127,14 +129,14 @@ public class DeckService {
             return DeckResponse.builder().valid(false).tacticMessage("Player cards not found.").build();
         }
         List<Card> allCards = clashService.getAllCards();
-        
+
         List<Card> playerCards = playerResponse.getCards().stream()
                 .map(dto -> {
                     Card playerCard = clashService.mapToCard(dto);
                     Card fullCard = allCards.stream()
-                        .filter(c -> c.getId() != null && c.getId().equals(playerCard.getId()))
-                        .findFirst().orElse(null);
-                        
+                            .filter(c -> c.getId() != null && c.getId().equals(playerCard.getId()))
+                            .findFirst().orElse(null);
+
                     if (fullCard != null) {
                         playerCard.setElixirCost(fullCard.getElixirCost());
                         playerCard.setImageUri(fullCard.getImageUri());
@@ -180,7 +182,8 @@ public class DeckService {
         List<CardDto> supportCards = playerResponse.getSupportCards();
         for (int i = 0; i < MAX_RETRIES; i++) {
             LlmDeckSuggestion suggestion = llmService.generateDeckCompletion(
-                    simplifiedCollection, forcedNames, request.getPlayStyle(), playerResponse.getBestTrophies(), supportCards);
+                    simplifiedCollection, forcedNames, request.getPlayStyle(), playerResponse.getBestTrophies(),
+                    supportCards);
 
             if (suggestion == null || suggestion.getCards() == null)
                 continue;
@@ -200,19 +203,20 @@ public class DeckService {
                 if (cardMap.containsKey(s.getName())) {
                     Card originalCard = cardMap.get(s.getName());
                     boolean userHasEvolution = Boolean.TRUE.equals(originalCard.getEvolved());
-                    List<String> intendedEvos = suggestion.getSelectedEvolutions() != null ? suggestion.getSelectedEvolutions() : new ArrayList<>();
-                    
+                    List<String> intendedEvos = suggestion.getSelectedEvolutions() != null
+                            ? suggestion.getSelectedEvolutions()
+                            : new ArrayList<>();
+
                     originalCard.setEvolved(userHasEvolution && intendedEvos.contains(originalCard.getName()));
                     finalDeck.add(originalCard);
                 }
             }
 
-
             enforceSmartConstraints(finalDeck, playerResponse.getBestTrophies());
 
             // Validate and potentially mix in forced cards if missing?
             // For MVP, if size != 8, we retry.
-            if (isValidDeck(finalDeck,playerResponse.getBestTrophies())) {
+            if (isValidDeck(finalDeck, playerResponse.getBestTrophies())) {
                 return buildResponse(finalDeck, suggestion, supportCards);
             }
         }
@@ -255,15 +259,18 @@ public class DeckService {
                 .mapToInt(c -> c.getElixirCost() != null ? c.getElixirCost() : 0)
                 .average().orElse(0.0);
 
-        // Sort for deep link: Evolved first, then Hero, then by elixir cost (matches frontend display order)
+        // Sort for deep link: Evolved first, then Hero, then by elixir cost (matches
+        // frontend display order)
         List<Card> sortedDeck = deck.stream()
                 .sorted((a, b) -> {
                     int aEvo = Boolean.TRUE.equals(a.getEvolved()) ? 1 : 0;
                     int bEvo = Boolean.TRUE.equals(b.getEvolved()) ? 1 : 0;
-                    if (aEvo != bEvo) return bEvo - aEvo;
+                    if (aEvo != bEvo)
+                        return bEvo - aEvo;
                     int aHero = Boolean.TRUE.equals(a.getIsHero()) ? 1 : 0;
                     int bHero = Boolean.TRUE.equals(b.getIsHero()) ? 1 : 0;
-                    if (aHero != bHero) return bHero - aHero;
+                    if (aHero != bHero)
+                        return bHero - aHero;
                     return Integer.compare(
                             a.getElixirCost() != null ? a.getElixirCost() : 0,
                             b.getElixirCost() != null ? b.getElixirCost() : 0);
@@ -291,7 +298,8 @@ public class DeckService {
                     towerTroopImageUrl = matched.getIconUrls().getMedium();
                 }
             } else {
-                log.warn("LLM selected tower troop '{}' not found in supportCards, falling back to first", selectedName);
+                log.warn("LLM selected tower troop '{}' not found in supportCards, falling back to first",
+                        selectedName);
                 // Fallback: pick the highest-level tower troop
                 if (!supportCards.isEmpty()) {
                     CardDto fallback = supportCards.stream()
@@ -340,7 +348,7 @@ public class DeckService {
                 .build();
     }
 
-    private boolean isValidDeck(List<Card> deck, Integer maxTrophies ) {
+    private boolean isValidDeck(List<Card> deck, Integer maxTrophies) {
         if (deck.size() != 8) {
             log.error("deck size can't be greater than 8, current size:{}", deck.size());
             return false;
@@ -353,12 +361,14 @@ public class DeckService {
 
         if (trophies < 3000) {
             if (heroCount > 1 || evolvedCount > 1) {
-                log.error("Under 3000 trophies: max 1 hero & max 1 evo. Current Hero: {}, Evolved: {}", heroCount, evolvedCount);
+                log.error("Under 3000 trophies: max 1 hero & max 1 evo. Current Hero: {}, Evolved: {}", heroCount,
+                        evolvedCount);
                 return false;
             }
         } else {
             if (heroCount + evolvedCount > 3) {
-                log.error("Over 3000 trophies: max 3 special cards total. Current Hero: {}, Evolved: {}", heroCount, evolvedCount);
+                log.error("Over 3000 trophies: max 3 special cards total. Current Hero: {}, Evolved: {}", heroCount,
+                        evolvedCount);
                 return false;
             }
             if (heroCount > 2) {
@@ -377,10 +387,10 @@ public class DeckService {
     private void enforceSmartConstraints(List<Card> deck, Integer maxTrophies) {
         int limit = (maxTrophies != null && maxTrophies >= 3000) ? 3 : 2;
         int maxEvos = (maxTrophies != null && maxTrophies >= 3000) ? 2 : 1;
-        
+
         long heroCount = deck.stream().filter(c -> Boolean.TRUE.equals(c.getIsHero())).count();
         long availableEvoSlots = Math.min(maxEvos, limit - heroCount);
-        
+
         int grantedEvoCount = 0;
         for (Card card : deck) {
             if (Boolean.TRUE.equals(card.getEvolved())) {
@@ -393,8 +403,6 @@ public class DeckService {
             }
         }
     }
-
-
 
     private SimplifiedCard toSimplified(Card card) {
         return SimplifiedCard.builder()

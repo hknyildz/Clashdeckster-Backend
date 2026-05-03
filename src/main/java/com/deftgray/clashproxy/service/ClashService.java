@@ -112,6 +112,94 @@ public class ClashService {
         }
     }
 
+    /**
+     * Fetch clan detail by clan tag (pass-through raw JSON).
+     */
+    public Object getClanInfo(String clanTag) {
+        String url = "https://api.clashroyale.com/v1/clans/{clanTag}";
+
+        HttpHeaders headers = new HttpHeaders();
+        headers.setBearerAuth(this.apiToken);
+        HttpEntity<String> entity = new HttpEntity<>(headers);
+
+        try {
+            log.info("Fetching clan info from Clash API for tag: {}", clanTag);
+            ResponseEntity<Object> response = restTemplate.exchange(url, HttpMethod.GET, entity,
+                    Object.class, clanTag);
+            log.info("Successfully fetched clan info for tag: {}", clanTag);
+            return response.getBody();
+        } catch (Exception e) {
+            log.error("Error fetching clan info for tag: {}", clanTag, e);
+            return null;
+        }
+    }
+
+    /**
+     * Search clans by name, or fetch top clans by filters (pass-through raw JSON).
+     */
+    public Object searchClans(String name, Integer minMembers, Integer minScore, Integer limit) {
+        StringBuilder urlBuilder = new StringBuilder("https://api.clashroyale.com/v1/clans?");
+        boolean hasParam = false;
+
+        if (name != null && !name.isBlank()) {
+            urlBuilder.append("name=").append(java.net.URLEncoder.encode(name, java.nio.charset.StandardCharsets.UTF_8));
+            hasParam = true;
+        }
+        if (minMembers != null) {
+            if (hasParam) urlBuilder.append("&");
+            urlBuilder.append("minMembers=").append(minMembers);
+            hasParam = true;
+        }
+        if (minScore != null) {
+            if (hasParam) urlBuilder.append("&");
+            urlBuilder.append("minScore=").append(minScore);
+            hasParam = true;
+        }
+        if (limit != null) {
+            if (hasParam) urlBuilder.append("&");
+            urlBuilder.append("limit=").append(limit);
+        }
+
+        String url = urlBuilder.toString();
+        log.info("Searching clans with URL: {}", url);
+
+        HttpHeaders headers = new HttpHeaders();
+        headers.setBearerAuth(this.apiToken);
+        HttpEntity<String> entity = new HttpEntity<>(headers);
+
+        try {
+            log.info("Executing clan search request to Clash API...");
+            ResponseEntity<Object> response = restTemplate.exchange(url, HttpMethod.GET, entity, Object.class);
+            log.info("Successfully received clan search results");
+            return response.getBody();
+        } catch (Exception e) {
+            log.error("Error searching clans", e);
+            return null;
+        }
+    }
+
+    /**
+     * Fetch player battle log (pass-through raw JSON array).
+     */
+    public Object getPlayerBattleLog(String playerTag) {
+        String url = "https://api.clashroyale.com/v1/players/{tag}/battlelog";
+
+        HttpHeaders headers = new HttpHeaders();
+        headers.setBearerAuth(this.apiToken);
+        HttpEntity<String> entity = new HttpEntity<>(headers);
+
+        try {
+            log.info("Fetching battle log from Clash API for player: {}", playerTag);
+            ResponseEntity<Object> response = restTemplate.exchange(url, HttpMethod.GET, entity,
+                    Object.class, playerTag);
+            log.info("Successfully fetched battle log for player: {}", playerTag);
+            return response.getBody();
+        } catch (Exception e) {
+            log.error("Error fetching battle log for tag: {}", playerTag, e);
+            return null;
+        }
+    }
+
     public Card mapToCard(CardDto dto) {
         Card card = new Card();
         card.setName(dto.getName());

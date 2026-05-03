@@ -66,4 +66,45 @@ public class Controller {
                 response.isValid(), response.getStrategy());
         return response;
     }
+
+    @GetMapping("/clan/{clanTag}")
+    public Object getClanInfo(@PathVariable String clanTag) {
+        log.info("=== Clan Info Request === tag: {}", clanTag);
+        Object response = clashService.getClanInfo(clanTag);
+        if (response != null) {
+            log.info("=== Clan Info Response === received for tag: {}", clanTag);
+        } else {
+            log.warn("=== Clan Info Response === null for tag: {}", clanTag);
+        }
+        return response;
+    }
+
+    @GetMapping("/clans")
+    public Object searchClans(
+            @RequestParam(required = false) String name,
+            @RequestParam(required = false) Integer minMembers,
+            @RequestParam(required = false) Integer minScore,
+            @RequestParam(required = false, defaultValue = "10") Integer limit) {
+        log.info("=== Clans Search Request === name: {}, minMembers: {}, minScore: {}, limit: {}",
+                name, minMembers, minScore, limit);
+        Object response = clashService.searchClans(name, minMembers, minScore, limit);
+        if (response != null) {
+            log.info("=== Clans Search Response === received");
+        } else {
+            log.warn("=== Clans Search Response === null");
+        }
+        return response;
+    }
+
+    @GetMapping("/player/{tag}/battlelog")
+    public Object getPlayerBattleLog(@PathVariable String tag) {
+        log.info("=== Battle Log Request === tag: {}", tag);
+        Object response = clashService.getPlayerBattleLog(tag);
+        if (response != null) {
+            log.info("=== Battle Log Response === received for tag: {}", tag);
+        } else {
+            log.warn("=== Battle Log Response === null for tag: {}", tag);
+        }
+        return response;
+    }
 }

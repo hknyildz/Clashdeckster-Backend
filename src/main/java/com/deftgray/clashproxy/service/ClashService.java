@@ -142,21 +142,25 @@ public class ClashService {
         boolean hasParam = false;
 
         if (name != null && !name.isBlank()) {
-            urlBuilder.append("name=").append(java.net.URLEncoder.encode(name, java.nio.charset.StandardCharsets.UTF_8));
+            urlBuilder.append("name=")
+                    .append(java.net.URLEncoder.encode(name, java.nio.charset.StandardCharsets.UTF_8));
             hasParam = true;
         }
         if (minMembers != null) {
-            if (hasParam) urlBuilder.append("&");
+            if (hasParam)
+                urlBuilder.append("&");
             urlBuilder.append("minMembers=").append(minMembers);
             hasParam = true;
         }
         if (minScore != null) {
-            if (hasParam) urlBuilder.append("&");
+            if (hasParam)
+                urlBuilder.append("&");
             urlBuilder.append("minScore=").append(minScore);
             hasParam = true;
         }
         if (limit != null) {
-            if (hasParam) urlBuilder.append("&");
+            if (hasParam)
+                urlBuilder.append("&");
             urlBuilder.append("limit=").append(limit);
         }
 
@@ -203,19 +207,15 @@ public class ClashService {
     public Card mapToCard(CardDto dto) {
         Card card = new Card();
         card.setName(dto.getName());
+        card.setId(dto.getId());
+        card.setElixirCost(dto.getElixirCost());
+        card.setRarity(dto.getRarity());
+        card.setType(dto.getType());
 
-        // Normalize Level based on Rarity
-        // API returns relative level (1-based index). We convert to Standard Level
-        // (1-15+).
-        Integer rawLevel = dto.getLevel();
-
-        // Handle generic card data where level might be null
-        if (rawLevel == null) {
-            rawLevel = 1; // Default base level if not specified
-        }
-
+        // 1. Seviye Normalizasyonu (Mevcut mantık korunuyor)
+        Integer rawLevel = dto.getLevel() != null ? dto.getLevel() : 1;
         String rarity = dto.getRarity();
-        int normalizedLevel = rawLevel; // Default for Common
+        int normalizedLevel = rawLevel;
 
         if (rarity != null) {
             switch (rarity.toLowerCase()) {
@@ -231,51 +231,47 @@ public class ClashService {
                 case "champion":
                     normalizedLevel = rawLevel + 10;
                     break;
-                default:
-                    // Common or unknown, keep rawLevel
-                    break;
             }
         }
         card.setLevel(normalizedLevel);
 
-        card.setElixirCost(dto.getElixirCost());
+        // 2. Görsel Mapping ve Flag Mantığı
+        boolean isChampion = rarity != null && rarity.equalsIgnoreCase("champion");
+        boolean isHeroVersion = dto.getMaxEvolutionLevel() != null && dto.getMaxEvolutionLevel() == 2;
+        boolean isEvoVersion = dto.getMaxEvolutionLevel() != null && dto.getMaxEvolutionLevel() == 1;
 
-        card.setRarity(dto.getRarity());
-        card.setType(dto.getType());
-        card.setId(dto.getId());
-
-        // Map Icon URLs
         if (dto.getIconUrls() != null) {
             String mediumUrl = dto.getIconUrls().getMedium();
-            card.setImageUri(mediumUrl);
-            
             String evoUrl = dto.getIconUrls().getEvolutionMedium();
             String heroUrl = dto.getIconUrls().getHeroMedium();
-            
-            // Fallbacks: If Evolution is null, try Hero (some cards like Barbarian Barrel put evo url there).
-            card.setImageUriEvolved(evoUrl != null ? evoUrl : (heroUrl != null ? heroUrl : mediumUrl));
-            
-            card.setImageUriHero(heroUrl != null ? heroUrl : (evoUrl != null ? evoUrl : mediumUrl));
+
+            // Ana görsel
+            card.setImageUri(mediumUrl);
+
+            // Evrimleşmiş (Evolution) Görsel Mantığı
+            if (evoUrl != null) {
+                card.setImageUriEvolved(evoUrl);
+            } else if (isEvoVersion && mediumUrl != null && mediumUrl.contains("/cards/")) {
+                card.setImageUriEvolved(mediumUrl.replace("/cards/", "/cardevolutions/"));
+            } else {
+                card.setImageUriEvolved(mediumUrl);
+            }
+
+            // Hero Görsel Mantığı
+            if (heroUrl != null) {
+                card.setImageUriHero(heroUrl);
+            } else if ((isChampion || isHeroVersion) && mediumUrl != null && mediumUrl.contains("/cards/")) {
+                card.setImageUriHero(mediumUrl.replace("/cards/", "/cardheroes/"));
+            } else {
+                card.setImageUriHero(mediumUrl);
+            }
         }
 
-        boolean isHero = false;
-        if (dto.getRarity() != null && dto.getRarity().equalsIgnoreCase("champion")) {
-            isHero = true;
-        } else if (dto.getIconUrls() != null && dto.getIconUrls().getHeroMedium() != null) {
-            isHero = true;
-        }
-        
-        boolean evolved = false;
-        if (dto.getIconUrls() != null && dto.getIconUrls().getEvolutionMedium() != null) {
-            evolved = true;
-        } else if (dto.getMaxEvolutionLevel() != null && dto.getMaxEvolutionLevel() > 0) {
-            evolved = true;
-        } else if (dto.getEvolutionLevel() != null && dto.getEvolutionLevel() > 0) {
-            evolved = true;
-        }
-
-        card.setIsHero(isHero);
-        card.setEvolved(evolved);
+        // 3. Status Flag'leri
+        // ÖNEMLİ: Bir kart aynı anda hem Hero hem Evolved olamaz. 
+        // maxEvolutionLevel 1 ise Evolved, 2 ise Hero'dur.
+        card.setIsHero(isChampion || isHeroVersion);
+        card.setEvolved(!isChampion && !isHeroVersion && isEvoVersion);
 
         return card;
     }

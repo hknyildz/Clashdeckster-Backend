@@ -87,13 +87,18 @@ public class DeckService {
                     Card originalCard = cardMap.get(name);
 
                     boolean userHasEvolution = Boolean.TRUE.equals(originalCard.getEvolved());
+                    boolean userHasHeroForm = Boolean.TRUE.equals(originalCard.getIsHero());
+
                     List<String> intendedEvos = suggestion.getSelectedEvolutions() != null
                             ? suggestion.getSelectedEvolutions()
                             : new ArrayList<>();
+                    List<String> intendedHeroes = suggestion.getSelectedHeroes() != null
+                            ? suggestion.getSelectedHeroes()
+                            : new ArrayList<>();
 
-                    // Only grant evolution if user owns it AND the LLM explicitly intended it in
-                    // the selected_evolutions array
+                    // Only grant evolution/hero if user owns it AND the LLM explicitly intended it
                     originalCard.setEvolved(userHasEvolution && intendedEvos.contains(name));
+                    originalCard.setIsHero(userHasHeroForm && intendedHeroes.contains(name));
 
                     deck.add(originalCard);
                 } else {
@@ -203,11 +208,17 @@ public class DeckService {
                 if (cardMap.containsKey(s.getName())) {
                     Card originalCard = cardMap.get(s.getName());
                     boolean userHasEvolution = Boolean.TRUE.equals(originalCard.getEvolved());
+                    boolean userHasHeroForm = Boolean.TRUE.equals(originalCard.getIsHero());
+
                     List<String> intendedEvos = suggestion.getSelectedEvolutions() != null
                             ? suggestion.getSelectedEvolutions()
                             : new ArrayList<>();
+                    List<String> intendedHeroes = suggestion.getSelectedHeroes() != null
+                            ? suggestion.getSelectedHeroes()
+                            : new ArrayList<>();
 
                     originalCard.setEvolved(userHasEvolution && intendedEvos.contains(originalCard.getName()));
+                    originalCard.setIsHero(userHasHeroForm && intendedHeroes.contains(originalCard.getName()));
                     finalDeck.add(originalCard);
                 }
             }

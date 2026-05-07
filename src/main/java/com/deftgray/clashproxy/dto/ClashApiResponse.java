@@ -16,6 +16,8 @@ public class ClashApiResponse {
     private Integer bestTrophies;
     private List<CardDto> cards;
     private List<CardDto> supportCards;
+    private List<CardDto> currentDeck;
+    private List<CardDto> currentDeckSupportCards;
 
     // Battle stats
     private Integer wins;

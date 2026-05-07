@@ -204,6 +204,80 @@ public class ClashService {
         }
     }
 
+    // ===================== META DECK JOB METHODS =====================
+
+    /**
+     * Fetch top player tags from Path of Legend rankings.
+     * Uses season fallback: starts with current month (YYYY-MM), 
+     * retries with previous month on 404.
+     *
+     * @param limit Number of players to fetch (max 1000)
+     * @return List of player tags (e.g. ["#GU2YR209R", "#V0L800PUJ", ...])
+     */
+    public List<String> fetchTopPlayerTags(int limit) {
+        HttpHeaders headers = new HttpHeaders();
+        headers.setBearerAuth(this.apiToken);
+        HttpEntity<String> entity = new HttpEntity<>(headers);
+
+        java.time.YearMonth currentMonth = java.time.YearMonth.now();
+
+        // Try current month first, then go back up to 6 months
+        for (int attempt = 0; attempt < 6; attempt++) {
+            java.time.YearMonth targetMonth = currentMonth.minusMonths(attempt);
+            String season = targetMonth.toString(); // "2026-05" format
+
+            String url = "https://api.clashroyale.com/v1/locations/global/pathoflegend/"
+                    + season + "/rankings/players?limit=" + limit;
+
+            try {
+                log.info("[Meta] Trying season: {} (attempt {})", season, attempt + 1);
+                ResponseEntity<com.deftgray.clashproxy.dto.RankingResponse> response =
+                        restTemplate.exchange(url, HttpMethod.GET, entity,
+                                com.deftgray.clashproxy.dto.RankingResponse.class);
+
+                com.deftgray.clashproxy.dto.RankingResponse body = response.getBody();
+                if (body != null && body.getItems() != null && !body.getItems().isEmpty()) {
+                    List<String> tags = body.getItems().stream()
+                            .map(com.deftgray.clashproxy.dto.RankingResponse.RankedPlayer::getTag)
+                            .toList();
+                    log.info("[Meta] Season resolved: {} — fetched {} player tags", season, tags.size());
+                    return tags;
+                }
+            } catch (org.springframework.web.client.HttpClientErrorException.NotFound e) {
+                log.warn("[Meta] Season {} returned 404, trying previous month...", season);
+            } catch (Exception e) {
+                log.error("[Meta] Error fetching rankings for season {}: {}", season, e.getMessage());
+            }
+        }
+
+        log.error("[Meta] Could not resolve any valid season after 6 attempts");
+        return new ArrayList<>();
+    }
+
+    /**
+     * Fetch player data directly from Clash API (no cache).
+     * Used by MetaDeckJob to get fresh currentDeck data.
+     *
+     * @param playerTag Player tag (e.g. "#GU2YR209R")
+     * @return ClashApiResponse with currentDeck and currentDeckSupportCards, or null on error
+     */
+    public ClashApiResponse fetchPlayerRaw(String playerTag) {
+        String url = "https://api.clashroyale.com/v1/players/{tag}";
+
+        HttpHeaders headers = new HttpHeaders();
+        headers.setBearerAuth(this.apiToken);
+        HttpEntity<String> entity = new HttpEntity<>(headers);
+
+        try {
+            ResponseEntity<ClashApiResponse> response = restTemplate.exchange(url, HttpMethod.GET, entity,
+                    ClashApiResponse.class, playerTag);
+            return response.getBody();
+        } catch (Exception e) {
+            log.warn("[Meta] Failed to fetch player {}: {}", playerTag, e.getMessage());
+            return null;
+        }
+    }
+
     public Card mapToCard(CardDto dto) {
         Card card = new Card();
         card.setName(dto.getName());

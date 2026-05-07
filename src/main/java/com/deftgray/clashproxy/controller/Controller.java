@@ -3,7 +3,10 @@ package com.deftgray.clashproxy.controller;
 import com.deftgray.clashproxy.dto.ClashApiResponse;
 import com.deftgray.clashproxy.dto.DeckCompletionRequest;
 import com.deftgray.clashproxy.dto.DeckResponse;
+import com.deftgray.clashproxy.entity.MetaDeckEntity;
+import com.deftgray.clashproxy.job.MetaDeckJob;
 import com.deftgray.clashproxy.model.Card;
+import com.deftgray.clashproxy.repository.MetaDeckRepository;
 import com.deftgray.clashproxy.service.ClashService;
 import com.deftgray.clashproxy.service.DeckService;
 import lombok.RequiredArgsConstructor;
@@ -11,6 +14,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
+import java.util.Map;
 
 @RestController
 @CrossOrigin
@@ -19,8 +23,9 @@ import java.util.List;
 public class Controller {
 
     private final ClashService clashService;
-
     private final DeckService deckService;
+    private final MetaDeckJob metaDeckJob;
+    private final MetaDeckRepository metaDeckRepository;
 
     @GetMapping("/player/{tag}")
     public ClashApiResponse getPlayerStats(@PathVariable String tag) {
@@ -107,4 +112,38 @@ public class Controller {
         }
         return response;
     }
+
+    // ===================== META DECK ENDPOINTS =====================
+
+    /**
+     * Get meta decks ordered by popularity.
+     * Optional limit parameter (default 100).
+     */
+    @GetMapping("/meta/decks")
+    public List<MetaDeckEntity> getMetaDecks(
+            @RequestParam(required = false, defaultValue = "100") Integer limit) {
+        log.info("=== Meta Decks Request === limit: {}", limit);
+        List<MetaDeckEntity> decks = metaDeckRepository.findLatestMetaDecks();
+        if (limit != null && limit < decks.size()) {
+            decks = decks.subList(0, limit);
+        }
+        log.info("=== Meta Decks Response === count: {}", decks.size());
+        return decks;
+    }
+
+    /**
+     * Manually trigger the meta deck job (for testing/debugging).
+     */
+    @PostMapping("/meta/run")
+    public Map<String, String> triggerMetaJob() {
+        log.info("=== Meta Job Manual Trigger ===");
+        try {
+            metaDeckJob.run();
+            return Map.of("status", "completed", "message", "Meta deck job finished successfully.");
+        } catch (Exception e) {
+            log.error("=== Meta Job Failed ===", e);
+            return Map.of("status", "error", "message", e.getMessage());
+        }
+    }
 }
+

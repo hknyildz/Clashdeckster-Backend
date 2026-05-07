@@ -53,15 +53,38 @@ jobs:
           script: |
             docker pull ${{ secrets.DOCKERHUB_USERNAME }}/clash-ai:latest
             
-           
+            # 1. Ortak bir network olustur (yoksa)
+            docker network create clash-net || true
+
+            # 2. Veritabanini baslat (eger zaten calismiyorsa)
+            if [ ! "$(docker ps -q -f name=clashproxy-db)" ]; then
+              docker rm clashproxy-db || true
+              docker run -d \
+                --name clashproxy-db \
+                --network clash-net \
+                --restart always \
+                -e POSTGRES_DB="${{ secrets.DB_NAME }}" \
+                -e POSTGRES_USER="${{ secrets.DB_USER }}" \
+                -e POSTGRES_PASSWORD="${{ secrets.DB_PASSWORD }}" \
+                -v pgdata:/var/lib/postgresql/data \
+                postgres:16-alpine
+            fi
+            
+            # 3. Eski uygulamayi durdur ve sil
             docker stop clash-app || true
             docker rm clash-app || true
             
-            
+            # 4. Yeni uygulamayi veritabani baglantisi ve log klasoru ile baslat
             docker run -d \
               --name clash-app \
+              --network clash-net \
               -p 8080:8080 \
               --restart always \
+              -v ~/meta-logs:/app/meta-logs \
+              -v ~/app-logs:/app/logs \
               -e CLASH_API_KEY="${{ secrets.CLASH_API_KEY }}" \
               -e OPENROUTER_API_KEY="${{ secrets.OPENROUTER_API_KEY }}" \
+              -e DATABASE_URL="jdbc:postgresql://clashproxy-db:5432/${{ secrets.DB_NAME }}" \
+              -e DATABASE_USER="${{ secrets.DB_USER }}" \
+              -e DATABASE_PASS="${{ secrets.DB_PASSWORD }}" \
               ${{ secrets.DOCKERHUB_USERNAME }}/clash-ai:latest

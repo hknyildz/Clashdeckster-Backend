@@ -13,11 +13,11 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
-import org.springframework.transaction.annotation.Transactional;
 
 import java.io.File;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
@@ -60,7 +60,6 @@ public class MetaDeckJob {
     /**
      * Main job logic — can also be triggered manually via /meta/run endpoint.
      */
-    @Transactional
     public void run() {
         Instant start = Instant.now();
         log.info("===== META DECK JOB STARTED =====");
@@ -188,6 +187,7 @@ public class MetaDeckJob {
             AggregatedDeck d = sortedDecks.get(i);
             entities.add(MetaDeckEntity.builder()
                     .deckKey(d.deckKey)
+                            .snapshotDate(LocalDate.now())
                     .winConditions(d.winConditions)
                     .gameType(d.gameType)
                     .cardsJson(DeckSignatureUtil.cardsToJson(d.cards))

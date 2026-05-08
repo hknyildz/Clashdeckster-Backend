@@ -3,14 +3,18 @@ package com.deftgray.clashproxy.service;
 import com.deftgray.clashproxy.dto.CardDto;
 import com.deftgray.clashproxy.dto.ClashApiResponse;
 import com.deftgray.clashproxy.dto.LlmDeckSuggestion;
+import com.deftgray.clashproxy.entity.UserEntity;
+import com.deftgray.clashproxy.meta.DeckSignatureUtil;
 import com.deftgray.clashproxy.model.Card;
 import com.deftgray.clashproxy.dto.DeckResponse;
 import com.deftgray.clashproxy.dto.SimplifiedCard;
 import com.deftgray.clashproxy.dto.DeckCompletionRequest;
+import com.deftgray.clashproxy.repository.UserRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
+import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -25,6 +29,8 @@ public class DeckService {
     private final ClashService clashService;
     private final LlmService llmService;
     private static final int MAX_RETRIES = 3;
+
+    private final UserRepository userRepository;
 
     public DeckResponse generateFreeDeck(String playerTag) {
         log.info("Generating free deck for player: {}", playerTag);
@@ -111,6 +117,18 @@ public class DeckService {
             // 4. Validate
             if (isValidDeck(deck, playerResponse.getBestTrophies())) {
                 log.info("Valid deck generated: {}", suggestion.getStrategy());
+
+                UserEntity userEntity = userRepository.findById(playerTag)
+                        .orElse(new UserEntity());
+                mapToUserEntity(userEntity
+                        ,playerResponse.getTag()
+                        ,playerResponse.getName()
+                        ,Integer.valueOf(playerResponse.getTrophies())
+                        ,playerResponse.getBestTrophies()
+                        ,playerResponse.getCurrentDeck()
+                        ,playerResponse.getCurrentDeckSupportCards().get(0).getId());
+                userRepository.save(userEntity);
+                log.info("User info saved: {}",userEntity);
                 return buildResponse(deck, suggestion, supportCards);
             }
             log.warn("Generated deck validation failed.");
@@ -124,6 +142,26 @@ public class DeckService {
                 .tacticMessage("Failed to generate a valid deck, please try again.")
                 .build();
     }
+
+    private UserEntity mapToUserEntity(UserEntity userEntity, String tag, String name, Integer trophies, Integer bestTrophies, List<CardDto> currentDeck, Long towerTroopId) {
+        if(userEntity.getPlayerTag()==null)
+        {
+            userEntity.setPlayerTag(tag);
+            userEntity.setDeckGenerationCount(1);
+        }
+        else {
+            userEntity.setDeckGenerationCount(userEntity.getDeckGenerationCount() + 1);
+        }
+
+        userEntity.setPlayerName(name);
+        userEntity.setCurrentTrophies(trophies);
+        userEntity.setBestTrophies(bestTrophies);
+        userEntity.setLastCurrentDeck(DeckSignatureUtil.cardsToJson(currentDeck));
+        userEntity.setDeckKey(DeckSignatureUtil.generateSignature(currentDeck,towerTroopId));
+        userEntity.setLastOperationDate(LocalDateTime.now());
+        return userEntity;
+    }
+
 
     public DeckResponse completeDeck(DeckCompletionRequest request) {
         log.info("Completing deck for player: {}", request.getPlayerTag());

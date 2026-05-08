@@ -13,7 +13,9 @@ import java.time.LocalDateTime;
  * Table is truncated and repopulated on each daily job run.
  */
 @Entity
-@Table(name = "meta_decks")
+@Table(name = "meta_decks", uniqueConstraints = {
+        @UniqueConstraint(columnNames = {"deck_key", "snapshot_date"})
+})
 @Data
 @Builder
 @NoArgsConstructor
@@ -25,11 +27,14 @@ public class MetaDeckEntity {
     private Long id;
 
     /**
-     * Unique deck signature in format: "cardId:evoLevel_cardId:evoLevel_..._T:towerTroopId"
+     * deck signature in format: "cardId:evoLevel_cardId:evoLevel_..._T:towerTroopId"
      * Cards are sorted by cardId ascending for normalization.
      */
-    @Column(name = "deck_key", nullable = false, unique = true, length = 512)
+    @Column(name = "deck_key", nullable = false,  length = 512)
     private String deckKey;
+
+    @Column(name = "snapshot_date", nullable = false)
+    private java.time.LocalDate snapshotDate;
 
     /**
      * Comma-separated list of win conditions found in the deck.

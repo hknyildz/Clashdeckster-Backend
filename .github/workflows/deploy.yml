@@ -63,6 +63,7 @@ jobs:
                 --name clashproxy-db \
                 --network clash-net \
                 --restart always \
+                -p 127.0.0.1:5432:5432 \
                 -e POSTGRES_DB="${{ secrets.DB_NAME }}" \
                 -e POSTGRES_USER="${{ secrets.DB_USER }}" \
                 -e POSTGRES_PASSWORD="${{ secrets.DB_PASSWORD }}" \

@@ -286,7 +286,7 @@ public class ClashService {
         card.setRarity(dto.getRarity());
         card.setType(dto.getType());
 
-        // 1. Seviye Normalizasyonu (Mevcut mantık korunuyor)
+        // 1. Level Normalization (Preserving existing logic)
         Integer rawLevel = dto.getLevel() != null ? dto.getLevel() : 1;
         String rarity = dto.getRarity();
         int normalizedLevel = rawLevel;
@@ -309,7 +309,7 @@ public class ClashService {
         }
         card.setLevel(normalizedLevel);
 
-        // 2. Görsel Mapping ve Flag Mantığı
+        // 2. Image Mapping and Flag Logic
         boolean isChampion = rarity != null && rarity.equalsIgnoreCase("champion");
         boolean isHeroVersion = dto.getMaxEvolutionLevel() != null && dto.getMaxEvolutionLevel() == 2;
         boolean isEvoVersion = dto.getMaxEvolutionLevel() != null && dto.getMaxEvolutionLevel() == 1;
@@ -319,10 +319,10 @@ public class ClashService {
             String evoUrl = dto.getIconUrls().getEvolutionMedium();
             String heroUrl = dto.getIconUrls().getHeroMedium();
 
-            // Ana görsel
+            // Main image
             card.setImageUri(mediumUrl);
 
-            // Evrimleşmiş (Evolution) Görsel Mantığı
+            // Evolved Image Logic
             if (evoUrl != null) {
                 card.setImageUriEvolved(evoUrl);
             } else if (isEvoVersion && mediumUrl != null && mediumUrl.contains("/cards/")) {
@@ -331,7 +331,7 @@ public class ClashService {
                 card.setImageUriEvolved(mediumUrl);
             }
 
-            // Hero Görsel Mantığı
+            // Hero Image Logic
             if (heroUrl != null) {
                 card.setImageUriHero(heroUrl);
             } else if ((isChampion || isHeroVersion) && mediumUrl != null && mediumUrl.contains("/cards/")) {
@@ -341,11 +341,13 @@ public class ClashService {
             }
         }
 
-        // 3. Status Flag'leri
-        // ÖNEMLİ: Bir kart aynı anda hem Hero hem Evolved olamaz. 
-        // maxEvolutionLevel 1 ise Evolved, 2 ise Hero'dur.
-        card.setIsHero(isChampion || isHeroVersion);
-        card.setEvolved(!isChampion && !isHeroVersion && isEvoVersion);
+        // 3. Status Flags
+        // A card cannot be both Hero and Evolved at the same time.
+        boolean isEvo = dto.getEvolutionLevel() != null && dto.getEvolutionLevel() == 1;
+        boolean isHero = dto.getEvolutionLevel() != null && dto.getEvolutionLevel() == 2;
+        
+        card.setIsHero(isHero);
+        card.setEvolved(isEvo);
 
         return card;
     }

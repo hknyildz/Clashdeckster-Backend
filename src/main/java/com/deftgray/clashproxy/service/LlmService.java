@@ -34,20 +34,28 @@ public class LlmService {
     @org.springframework.beans.factory.annotation.Value("${openrouter.model}")
     private String modelName;
 
-    public LlmDeckSuggestion generateDeckRecommendation(List<SimplifiedCard> cards, Integer bestTrophies, List<CardDto> supportCards) {
+    // ══════════════════════════════════════════════
+    //  Public API — with previousErrors for retry feedback
+    // ══════════════════════════════════════════════
+
+    public LlmDeckSuggestion generateDeckRecommendation(List<SimplifiedCard> cards,
+                                                         Integer bestTrophies,
+                                                         List<CardDto> supportCards,
+                                                         String metaContext,
+                                                         List<String> previousErrors) {
         if (apiKey == null || apiKey.isEmpty()) {
             apiKey = " ";
             log.warn("Using hardcoded API key (NOT RECOMMENDED for production)");
         }
 
-        String prompt = createPrompt(cards, supportCards);
+        String prompt = createPrompt(cards, supportCards, previousErrors);
         log.debug("Sending prompt to LLM: {}", prompt);
 
         HttpHeaders headers = new HttpHeaders();
         headers.setBearerAuth(apiKey);
         headers.setContentType(MediaType.APPLICATION_JSON);
 
-        String systemContent = getSystemPromptBase(bestTrophies, false, null, supportCards);
+        String systemContent = getSystemPromptBase(bestTrophies, false, null, supportCards, metaContext);
 
         Map<String, Object> body = Map.of(
                 "model", modelName,
@@ -67,7 +75,51 @@ public class LlmService {
         }
     }
 
-    private String createPrompt(List<SimplifiedCard> cards, List<CardDto> supportCards) {
+    public LlmDeckSuggestion generateDeckCompletion(List<SimplifiedCard> collection,
+                                                     List<String> currentDeckNames,
+                                                     String playStyle,
+                                                     Integer bestTrophies,
+                                                     List<CardDto> supportCards,
+                                                     String metaContext,
+                                                     List<String> previousErrors) {
+        if (apiKey == null || apiKey.isEmpty()) {
+            apiKey = " ";
+            log.warn("Using hardcoded API key (NOT RECOMMENDED for production)");
+        }
+
+        String prompt = createCompletionPrompt(collection, currentDeckNames, playStyle, supportCards, previousErrors);
+        log.debug("Sending completion prompt to LLM: {}", prompt);
+
+        HttpHeaders headers = new HttpHeaders();
+        headers.setBearerAuth(apiKey);
+        headers.setContentType(MediaType.APPLICATION_JSON);
+
+        String systemContent = getSystemPromptBase(bestTrophies, true, playStyle, supportCards, metaContext);
+
+        Map<String, Object> body = Map.of(
+                "model", modelName,
+                "messages", List.of(
+                        Map.of("role", "system", "content", systemContent),
+                        Map.of("role", "user", "content", prompt)));
+
+        HttpEntity<Map<String, Object>> entity = new HttpEntity<>(body, headers);
+
+        try {
+            String response = restTemplate.postForObject(openRouterUrl, entity, String.class);
+            log.info("Received response from LLM: {}", response != null ? response.replaceAll("\\n", "").replaceAll("\\s+", " ").trim() : "null");
+            return parseResponse(response);
+        } catch (Exception e) {
+            log.error("Error calling OpenRouter API", e);
+            return null;
+        }
+    }
+
+    // ══════════════════════════════════════════════
+    //  Prompt Builders
+    // ══════════════════════════════════════════════
+
+    private String createPrompt(List<SimplifiedCard> cards, List<CardDto> supportCards,
+                                 List<String> previousErrors) {
         String cardList = cards.stream()
                 .sorted((c1, c2) -> Integer.compare(c2.getLevel() != null ? c2.getLevel() : 0,
                         c1.getLevel() != null ? c1.getLevel() : 0))
@@ -77,50 +129,31 @@ public class LlmService {
 
         String towerInfo = buildTowerTroopInfo(supportCards);
 
-        return "Here is my collection of cards, sorted by level (highest first):\n" + cardList
-                + towerInfo
-                + "\n\nPick 8 cards for a balanced, competitive deck. \n"
-                + "CRITICAL REQUIREMENT - BALANCE SYNERGY AND LEVELS:\n"
-                + "1. DECK SYNERGY IS PARAMOUNT: The deck must have a clear win condition, good defense, and spell support. Do not blindly pick all high-level cards if they ruin the synergy.\n"
-                + "2. MAXIMIZE LEVELS WITHIN SYNERGY: Whenever you have multiple viable cards for a slot that fit the deck's archetype, YOU MUST select the one with the highest level (16, 15, 14, 13). Avoid level 9-10 cards if a level 14,15,16 viable alternative exists.";
-    }
+        StringBuilder sb = new StringBuilder();
+        sb.append("Here is my collection of cards, sorted by level (highest first):\n");
+        sb.append(cardList);
+        sb.append(towerInfo);
+        sb.append("\n\nPick 8 cards for a balanced, competitive deck.\n");
+        sb.append("CRITICAL REQUIREMENT - BALANCE SYNERGY AND LEVELS:\n");
+        sb.append("1. DECK SYNERGY IS PARAMOUNT: The deck must have a clear win condition, good defense, and spell support. Do not blindly pick all high-level cards if they ruin the synergy.\n");
+        sb.append("2. MAXIMIZE LEVELS WITHIN SYNERGY: Whenever you have multiple viable cards for a slot that fit the deck's archetype, YOU MUST select the one with the highest level (16, 15, 14, 13). Avoid level 9-10 cards if a level 14,15,16 viable alternative exists.\n");
+        sb.append("3. ONLY USE CARDS FROM THE COLLECTION ABOVE. Do NOT suggest any card that is not listed.\n");
 
-    public LlmDeckSuggestion generateDeckCompletion(List<SimplifiedCard> collection,
-            List<String> currentDeckNames, String playStyle, Integer bestTrophies, List<CardDto> supportCards) {
-        if (apiKey == null || apiKey.isEmpty()) {
-            apiKey = " ";
-            log.warn("Using hardcoded API key (NOT RECOMMENDED for production)");
+        // Append previous errors for retry feedback
+        if (previousErrors != null && !previousErrors.isEmpty()) {
+            sb.append("\n⚠️ YOUR PREVIOUS ATTEMPT HAD ERRORS. FIX THESE:\n");
+            for (String err : previousErrors) {
+                sb.append("- ").append(err).append("\n");
+            }
+            sb.append("Please generate a corrected deck that avoids ALL of the above errors.\n");
         }
 
-        String prompt = createCompletionPrompt(collection, currentDeckNames, playStyle, supportCards);
-        log.debug("Sending completion prompt to LLM: {}", prompt);
-
-        HttpHeaders headers = new HttpHeaders();
-        headers.setBearerAuth(apiKey);
-        headers.setContentType(MediaType.APPLICATION_JSON);
-
-        String systemContent = getSystemPromptBase(bestTrophies, true, playStyle, supportCards);
-
-        Map<String, Object> body = Map.of(
-                "model", modelName,
-                "messages", List.of(
-                        Map.of("role", "system", "content", systemContent),
-                        Map.of("role", "user", "content", prompt)));
-
-        HttpEntity<Map<String, Object>> entity = new HttpEntity<>(body, headers);
-
-        try {
-            String response = restTemplate.postForObject(openRouterUrl, entity, String.class);
-            log.info("Received response from LLM: {}", response != null ? response.replaceAll("\\n", "").replaceAll("\\s+", " ").trim() : "null");
-            return parseResponse(response);
-        } catch (Exception e) {
-            log.error("Error calling OpenRouter API", e);
-            return null;
-        }
+        return sb.toString();
     }
 
     private String createCompletionPrompt(List<SimplifiedCard> collection, List<String> currentDeckNames,
-            String playStyle, List<CardDto> supportCards) {
+                                           String playStyle, List<CardDto> supportCards,
+                                           List<String> previousErrors) {
         String cardList = collection.stream()
                 .sorted((c1, c2) -> Integer.compare(c2.getLevel() != null ? c2.getLevel() : 0,
                         c1.getLevel() != null ? c1.getLevel() : 0))
@@ -131,18 +164,35 @@ public class LlmService {
         String alreadySelected = String.join(", ", currentDeckNames);
         String towerInfo = buildTowerTroopInfo(supportCards);
 
-        return "Here is my collection of cards, sorted by level (highest first):\n" + cardList
-                + towerInfo
-                + "\n\nI want to build a '" + playStyle + "' deck."
-                + "\nI have ALREADY selected these cards: " + alreadySelected
-                + "\nPlease pick the remaining cards from my collection to form a complete, competitive 8-card deck. Ensure the final deck includes the cards I selected.\n"
-                + "CRITICAL REQUIREMENT - BALANCE SYNERGY AND LEVELS:\n"
-                + "1. SYNERGY FIRST: Make sure the final deck has excellent synergy for a " + playStyle
-                + " archetype.\n"
-                + "2. LEVELS SECOND: When deciding between two cards that both fit the synergy, YOU MUST pick the one with the higher level (13, 14, 15). Avoid adding low-level cards if a high-level alternative exists that preserves the deck's power.";
+        StringBuilder sb = new StringBuilder();
+        sb.append("Here is my collection of cards, sorted by level (highest first):\n");
+        sb.append(cardList);
+        sb.append(towerInfo);
+        sb.append("\n\nI want to build a '").append(playStyle).append("' deck.");
+        sb.append("\nI have ALREADY selected these cards: ").append(alreadySelected);
+        sb.append("\nPlease pick the remaining cards from my collection to form a complete, competitive 8-card deck. Ensure the final deck includes the cards I selected.\n");
+        sb.append("CRITICAL REQUIREMENT - BALANCE SYNERGY AND LEVELS:\n");
+        sb.append("1. SYNERGY FIRST: Make sure the final deck has excellent synergy for a ").append(playStyle).append(" archetype.\n");
+        sb.append("2. LEVELS SECOND: When deciding between two cards that both fit the synergy, YOU MUST pick the one with the higher level (13, 14, 15). Avoid adding low-level cards if a high-level alternative exists that preserves the deck's power.\n");
+        sb.append("3. ONLY USE CARDS FROM THE COLLECTION ABOVE. Do NOT suggest any card that is not listed.\n");
+
+        if (previousErrors != null && !previousErrors.isEmpty()) {
+            sb.append("\n⚠️ YOUR PREVIOUS ATTEMPT HAD ERRORS. FIX THESE:\n");
+            for (String err : previousErrors) {
+                sb.append("- ").append(err).append("\n");
+            }
+            sb.append("Please generate a corrected deck that avoids ALL of the above errors.\n");
+        }
+
+        return sb.toString();
     }
 
-    private String getSystemPromptBase(Integer bestTrophies, boolean isCompletion, String playStyle, List<CardDto> supportCards) {
+    // ══════════════════════════════════════════════
+    //  System Prompt
+    // ══════════════════════════════════════════════
+
+    private String getSystemPromptBase(Integer bestTrophies, boolean isCompletion, String playStyle,
+                                        List<CardDto> supportCards, String metaContext) {
         int trophies = bestTrophies != null ? bestTrophies : 0;
         int evoLimit = trophies < 3000 ? 1 : 2;
         int heroLimit = trophies < 3000 ? 1 : 2;
@@ -150,11 +200,11 @@ public class LlmService {
 
         String constraints = "- MAXIMUM Evolutions Allowed: " + evoLimit + "\n" +
                 "- MAXIMUM Heroes Allowed: " + heroLimit + "\n" +
-                "- TOTAL SPECIAL CARDS (Heroes + Evolutions combined): " + totalLimit + "\n";
+                "- TOTAL SPECIAL CARDS (Heroes + Evolutions combined): " + totalLimit + "\n" +
+                "- MAXIMIZE THE USE OF EVOLUTIONS AND HEROES: If the player has unlocked an evolution (Evo: true) or hero form (Hero: true) for a card in the deck, you SHOULD use it as long as you don't exceed the limits. Empty evo/hero slots are WASTED potential.\n";
 
         String towerConstraint = "";
         if (supportCards != null && !supportCards.isEmpty()) {
-            // Find the highest level tower troop to set the level-gap rule
             int maxTowerLevel = supportCards.stream()
                     .mapToInt(sc -> sc.getLevel() != null ? sc.getLevel() : 1)
                     .max().orElse(1);
@@ -168,8 +218,10 @@ public class LlmService {
                 + "2. STEP 2: Decide your heroes. List their names in the 'selected_heroes' array. Its length MUST NOT exceed the Maximum Heroes Allowed.\n"
                 + "3. STEP 3: Verify that the sum of lengths of both arrays does NOT exceed the TOTAL SPECIAL CARDS limit.\n"
                 + "4. STEP 4: Build exactly 8 cards. ONLY set 'isEvolved': true if the card is in 'selected_evolutions'.\n"
-                + "5. ONLY evolve cards if the player collection indicates they have it unlocked (Evo: true or Level covers it).\n"
-                + "6. STEP 5: Pick a tower troop from the available tower troops and put its exact name in 'selected_tower_troop'.\n";
+                + "5. ONLY evolve cards if the player collection indicates they have it unlocked (Evo: true).\n"
+                + "6. ONLY use hero form if the player collection indicates they have it unlocked (Hero: true).\n"
+                + "7. STEP 5: Pick a tower troop from the available tower troops and put its exact name in 'selected_tower_troop'.\n"
+                + "8. CRITICAL: ONLY pick cards that are listed in the player's collection. If a card is not in the list, you CANNOT use it.\n";
 
         String jsonFormat = "Return ONLY a raw JSON object string with no markdown (no ```json). Format:\n"
                 + "{\n"
@@ -178,7 +230,7 @@ public class LlmService {
                 + "  \"selected_tower_troop\": \"Tower Princess\",\n"
                 + "  \"cards\": [ {\"name\": \"...\", \"isEvolved\": true/false, \"isHero\": true/false, \"level\": 14} ],\n"
                 + "  \"strategy\": \"Beatdown | Control | Cycle | Bait | Siege | Bridge Spam | Split Lane | Hybrid\",\n"
-                + "  \"tactic\": \"Explanation...\"\n"
+                + "  \"tactic\": \"Detailed explanation of the deck strategy: what is the win condition, how to play offense, how to defend, what spells to use and when, key synergies between the cards.\"\n"
                 + "}";
 
         if (isCompletion) {
@@ -193,7 +245,8 @@ public class LlmService {
                     + "\nINSTRUCTIONS:\n"
                     + coreInstructions
                     + "\nOUTPUT FORMAT:\n"
-                    + jsonFormat;
+                    + jsonFormat
+                    + buildMetaIntelligenceBlock(metaContext);
         } else {
             return "You are an elite Clash Royale Deck Building AI.\n\n"
                     + "YOUR TASK:\n"
@@ -204,9 +257,14 @@ public class LlmService {
                     + "\nINSTRUCTIONS:\n"
                     + coreInstructions
                     + "\nOUTPUT FORMAT:\n"
-                    + jsonFormat;
+                    + jsonFormat
+                    + buildMetaIntelligenceBlock(metaContext);
         }
     }
+
+    // ══════════════════════════════════════════════
+    //  Response Parsing
+    // ══════════════════════════════════════════════
 
     private LlmDeckSuggestion parseResponse(String jsonResponse) {
         try {
@@ -252,6 +310,10 @@ public class LlmService {
         }
     }
 
+    // ══════════════════════════════════════════════
+    //  Helpers
+    // ══════════════════════════════════════════════
+
     private String buildTowerTroopInfo(List<CardDto> supportCards) {
         if (supportCards == null || supportCards.isEmpty()) {
             return "";
@@ -264,5 +326,21 @@ public class LlmService {
                         sc.getRarity() != null ? sc.getRarity() : "unknown"))
                 .collect(Collectors.joining("\n"));
         return "\n\nTower Troops available (pick one for 'selected_tower_troop'):\n" + towerList;
+    }
+
+    /**
+     * Wraps meta-context (reference decks + co-occurrence) with LLM instructions.
+     * Returns empty string if no meta context is available.
+     */
+    private String buildMetaIntelligenceBlock(String metaContext) {
+        if (metaContext == null || metaContext.isBlank()) {
+            return "";
+        }
+        return "\n\nIMPORTANT META INTELLIGENCE:" + metaContext
+                + "\nUSE these reference decks as your PRIMARY guide. "
+                + "Adapt the closest matching meta deck to the player's collection. "
+                + "Replace cards the player doesn't own with the highest-level "
+                + "alternatives that preserve the deck's synergy and combos. "
+                + "DO NOT blindly copy; adapt intelligently based on card levels.";
     }
 }

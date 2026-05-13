@@ -1,325 +1,195 @@
 package com.deftgray.clashproxy.service;
 
+
 import com.deftgray.clashproxy.dto.CardDto;
 import com.deftgray.clashproxy.dto.ClashApiResponse;
-import com.deftgray.clashproxy.dto.LlmDeckSuggestion;
 import com.deftgray.clashproxy.entity.UserEntity;
 import com.deftgray.clashproxy.meta.DeckSignatureUtil;
 import com.deftgray.clashproxy.model.Card;
 import com.deftgray.clashproxy.dto.DeckResponse;
-import com.deftgray.clashproxy.dto.SimplifiedCard;
 import com.deftgray.clashproxy.dto.DeckCompletionRequest;
 import com.deftgray.clashproxy.repository.UserRepository;
-import lombok.RequiredArgsConstructor;
+import com.deftgray.clashproxy.strategy.DeckBuildContext;
+import com.deftgray.clashproxy.strategy.DeckBuildResult;
+import com.deftgray.clashproxy.strategy.DeckBuildStrategy;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Map;
-import java.util.function.Function;
 import java.util.stream.Collectors;
 
+/**
+ * Orchestrator for deck generation.
+ * Delegates deck building to a chain of strategies (MetaBased → LlmFallback)
+ * and handles player data fetching, user persistence, and response formatting.
+ */
 @Service
-@RequiredArgsConstructor
 @Slf4j
 public class DeckService {
 
     private final ClashService clashService;
-    private final LlmService llmService;
-    private static final int MAX_RETRIES = 3;
-
     private final UserRepository userRepository;
+    private final List<DeckBuildStrategy> strategies;
+
+    /**
+     * Spring injects all DeckBuildStrategy beans.
+     * We order them: MetaLlmStrategy first, LlmFallbackStrategy last.
+     */
+    public DeckService(ClashService clashService,
+                       UserRepository userRepository,
+                       List<DeckBuildStrategy> strategies) {
+        this.clashService = clashService;
+        this.userRepository = userRepository;
+        // Sort: MetaLlmStrategy first (@Order(1)), LlmFallbackStrategy last (@Order(2))
+        // If we need explicit ordering later, use @Order annotation
+        this.strategies = strategies;
+        log.info("DeckService initialized with {} strategies: {}",
+                strategies.size(),
+                strategies.stream().map(DeckBuildStrategy::name)
+                        .collect(Collectors.joining(" → ")));
+    }
+
+    // ══════════════════════════════════════════════
+    //  Quick Generate
+    // ══════════════════════════════════════════════
 
     public DeckResponse generateFreeDeck(String playerTag) {
         log.info("Generating free deck for player: {}", playerTag);
-        // 1. Get Player Cards
+
+        // 1. Fetch & enrich player cards
         ClashApiResponse playerResponse = clashService.getPlayerCards(playerTag);
-        if (playerResponse == null || playerResponse.getCards() == null || playerResponse.getCards().isEmpty()) {
+        if (playerResponse == null || playerResponse.getCards() == null
+                || playerResponse.getCards().isEmpty()) {
             log.warn("No cards found for player: {}", playerTag);
             return DeckResponse.builder().valid(false).strategy("N/A")
                     .tacticMessage("Player not found or no cards available.").build();
         }
-        List<Card> cachedAllCards = clashService.getAllCards();
-        List<Card> allCards = playerResponse.getCards().stream()
-                .map(dto -> {
-                    Card playerCard = clashService.mapToCard(dto);
-                    Card fullCard = cachedAllCards.stream()
-                            .filter(c -> c.getId() != null && c.getId().equals(playerCard.getId()))
-                            .findFirst().orElse(null);
 
-                    if (fullCard != null) {
-                        playerCard.setElixirCost(fullCard.getElixirCost());
-                        playerCard.setImageUri(fullCard.getImageUri());
-                        playerCard.setImageUriEvolved(fullCard.getImageUriEvolved());
-                        playerCard.setImageUriHero(fullCard.getImageUriHero());
-                        playerCard.setType(fullCard.getType());
-                        playerCard.setRarity(fullCard.getRarity());
-                    }
-                    return playerCard;
-                })
-                .toList();
-        log.info("Found {} cards for player", allCards.size());
-
-        // 2. Simplify for LLM
-        List<SimplifiedCard> simplifiedCards = allCards.stream()
-                .map(this::toSimplified)
-                .toList();
-
-        // Map for quick lookup
-        Map<String, Card> cardMap = allCards.stream()
-                .collect(Collectors.toMap(Card::getName, Function.identity(), (a, b) -> a)); // Handle duplicates if any
-
-        // 3. Retry Loop
+        List<Card> playerCards = enrichPlayerCards(playerResponse);
         List<CardDto> supportCards = playerResponse.getSupportCards();
-        for (int i = 0; i < MAX_RETRIES; i++) {
-            log.info("Attempt {}/{} to generate deck via LLM", i + 1, MAX_RETRIES);
-            LlmDeckSuggestion suggestion = llmService
-                    .generateDeckRecommendation(simplifiedCards, playerResponse.getBestTrophies(), supportCards);
 
-            if (suggestion == null || suggestion.getCards() == null || suggestion.getCards().isEmpty()) {
-                log.error("LLM returned empty suggestion");
-                continue;
-            }
-            log.info("LLM suggested cards: {}", suggestion.getCards());
-
-            List<Card> deck = new ArrayList<>();
-            for (LlmDeckSuggestion.LlmCardSuggestion cardSuggestion : suggestion
-                    .getCards()) {
-                String name = cardSuggestion.getName();
-
-                if (cardMap.containsKey(name)) {
-                    Card originalCard = cardMap.get(name);
-
-                    boolean userHasEvolution = Boolean.TRUE.equals(originalCard.getEvolved());
-                    boolean userHasHeroForm = Boolean.TRUE.equals(originalCard.getIsHero());
-
-                    List<String> intendedEvos = suggestion.getSelectedEvolutions() != null
-                            ? suggestion.getSelectedEvolutions()
-                            : new ArrayList<>();
-                    List<String> intendedHeroes = suggestion.getSelectedHeroes() != null
-                            ? suggestion.getSelectedHeroes()
-                            : new ArrayList<>();
-
-                    // Only grant evolution/hero if user owns it AND the LLM explicitly intended it
-                    originalCard.setEvolved(userHasEvolution && intendedEvos.contains(name));
-                    originalCard.setIsHero(userHasHeroForm && intendedHeroes.contains(name));
-
-                    deck.add(originalCard);
-                } else {
-                    log.warn("Suggested card '{}' not found in player's collection", name);
-                }
-            }
-
-            enforceSmartConstraints(deck, playerResponse.getBestTrophies());
-
-            // 4. Validate
-            if (isValidDeck(deck, playerResponse.getBestTrophies())) {
-                log.info("Valid deck generated: {}", suggestion.getStrategy());
-
-                UserEntity userEntity = userRepository.findById(playerTag)
-                        .orElse(new UserEntity());
-                mapToUserEntity(userEntity
-                        ,playerResponse.getTag()
-                        ,playerResponse.getName()
-                        ,Integer.valueOf(playerResponse.getTrophies())
-                        ,playerResponse.getBestTrophies()
-                        ,playerResponse.getCurrentDeck()
-                        ,playerResponse.getCurrentDeckSupportCards().get(0).getId());
-                userRepository.save(userEntity);
-                log.info("User info saved: {}",userEntity);
-                return buildResponse(deck, suggestion, supportCards);
-            }
-            log.warn("Generated deck validation failed.");
-            // If invalid, loop again
-        }
-
-        log.error("Failed to generate valid deck after retries");
-        return DeckResponse.builder()
-                .valid(false)
-                .strategy("N/A")
-                .tacticMessage("Failed to generate a valid deck, please try again.")
+        // 2. Build context
+        DeckBuildContext context = DeckBuildContext.builder()
+                .playerCards(playerCards)
+                .bestTrophies(playerResponse.getBestTrophies())
+                .supportCards(supportCards)
+                .playerTag(playerTag)
                 .build();
+
+        // 3. Run strategy chain
+        DeckBuildResult result = runStrategyChain(context);
+
+        if (result == null) {
+            log.error("All strategies failed for player: {}", playerTag);
+            return DeckResponse.builder()
+                    .valid(false).strategy("N/A")
+                    .tacticMessage("Failed to generate a valid deck, please try again.")
+                    .build();
+        }
+
+        // 4. Save user info
+        saveUserInfo(playerTag, playerResponse);
+
+        // 5. Build response
+        return buildResponse(result, supportCards);
     }
 
-    private UserEntity mapToUserEntity(UserEntity userEntity, String tag, String name, Integer trophies, Integer bestTrophies, List<CardDto> currentDeck, Long towerTroopId) {
-        if(userEntity.getPlayerTag()==null)
-        {
-            userEntity.setPlayerTag(tag);
-            userEntity.setDeckGenerationCount(1);
-        }
-        else {
-            userEntity.setDeckGenerationCount(userEntity.getDeckGenerationCount() + 1);
-        }
-
-        userEntity.setPlayerName(name);
-        userEntity.setCurrentTrophies(trophies);
-        userEntity.setBestTrophies(bestTrophies);
-        userEntity.setLastCurrentDeck(DeckSignatureUtil.cardsToJson(currentDeck));
-        userEntity.setDeckKey(DeckSignatureUtil.generateSignature(currentDeck,towerTroopId));
-        userEntity.setLastOperationDate(LocalDateTime.now());
-        return userEntity;
-    }
-
+    // ══════════════════════════════════════════════
+    //  Advanced Builder (Complete Deck)
+    // ══════════════════════════════════════════════
 
     public DeckResponse completeDeck(DeckCompletionRequest request) {
         log.info("Completing deck for player: {}", request.getPlayerTag());
 
-        // 1. Get Player Cards & All Cards
+        // 1. Fetch & enrich
         ClashApiResponse playerResponse = clashService.getPlayerCards(request.getPlayerTag());
-        if (playerResponse == null || playerResponse.getCards() == null || playerResponse.getCards().isEmpty()) {
-            return DeckResponse.builder().valid(false).tacticMessage("Player cards not found.").build();
-        }
-        List<Card> allCards = clashService.getAllCards();
-
-        List<Card> playerCards = playerResponse.getCards().stream()
-                .map(dto -> {
-                    Card playerCard = clashService.mapToCard(dto);
-                    Card fullCard = allCards.stream()
-                            .filter(c -> c.getId() != null && c.getId().equals(playerCard.getId()))
-                            .findFirst().orElse(null);
-
-                    if (fullCard != null) {
-                        playerCard.setElixirCost(fullCard.getElixirCost());
-                        playerCard.setImageUri(fullCard.getImageUri());
-                        playerCard.setImageUriEvolved(fullCard.getImageUriEvolved());
-                        playerCard.setImageUriHero(fullCard.getImageUriHero());
-                        playerCard.setType(fullCard.getType());
-                        playerCard.setRarity(fullCard.getRarity());
-                    }
-                    return playerCard;
-                })
-                .toList();
-
-        // 2. Process Partial Deck & Substitutions
-        List<Card> forcedUpdates = new ArrayList<>();
-        List<String> forcedNames = new ArrayList<>();
-
-        if (request.getPartialDeck() != null) {
-            for (Long id : request.getPartialDeck()) {
-                // Check if user owns it
-                Card owned = playerCards.stream().filter(c -> c.getId().equals(id)).findFirst().orElse(null);
-
-                if (owned != null) {
-                    forcedUpdates.add(owned);
-                    forcedNames.add(owned.getName());
-                } else {
-                    // Find substitute
-                    Card substitute = findSubstitute(id, playerCards, allCards);
-                    if (substitute != null) {
-                        log.info("Substituting missing card ID {} with {}", id, substitute.getName());
-                        forcedUpdates.add(substitute);
-                        forcedNames.add(substitute.getName());
-                    } else {
-                        log.warn("Could not find substitute for ID {}", id);
-                    }
-                }
-            }
+        if (playerResponse == null || playerResponse.getCards() == null
+                || playerResponse.getCards().isEmpty()) {
+            return DeckResponse.builder().valid(false)
+                    .tacticMessage("Player cards not found.").build();
         }
 
-        // 3. Simplify & Call LLM
-        List<SimplifiedCard> simplifiedCollection = playerCards.stream().map(this::toSimplified).toList();
-
-        // Retry Loop
+        List<Card> playerCards = enrichPlayerCards(playerResponse);
         List<CardDto> supportCards = playerResponse.getSupportCards();
-        for (int i = 0; i < MAX_RETRIES; i++) {
-            LlmDeckSuggestion suggestion = llmService.generateDeckCompletion(
-                    simplifiedCollection, forcedNames, request.getPlayStyle(), playerResponse.getBestTrophies(),
-                    supportCards);
 
-            if (suggestion == null || suggestion.getCards() == null)
+        // 2. Resolve locked card names from IDs
+        List<String> lockedNames = resolveLockedCards(request.getPartialDeck(),
+                playerCards, clashService.getAllCards());
+
+        // 3. Build context
+        DeckBuildContext context = DeckBuildContext.builder()
+                .playerCards(playerCards)
+                .bestTrophies(playerResponse.getBestTrophies())
+                .supportCards(supportCards)
+                .playerTag(request.getPlayerTag())
+                .lockedCardNames(lockedNames)
+                .playStyle(request.getPlayStyle())
+                .build();
+
+        // 4. Run strategy chain
+        DeckBuildResult result = runStrategyChain(context);
+
+        if (result == null) {
+            return DeckResponse.builder().valid(false)
+                    .tacticMessage("Failed to complete deck.").build();
+        }
+
+        // 5. Build response
+        return buildResponse(result, supportCards);
+    }
+
+    // ══════════════════════════════════════════════
+    //  Strategy Chain
+    // ══════════════════════════════════════════════
+
+    /**
+     * Tries each strategy in order. Returns the first successful result,
+     * or null if all strategies fail.
+     */
+    private DeckBuildResult runStrategyChain(DeckBuildContext context) {
+        for (DeckBuildStrategy strategy : strategies) {
+            if (!strategy.canHandle(context)) {
+                log.info("[StrategyChain] {} cannot handle this context, skipping",
+                        strategy.name());
                 continue;
-
-            // Map back to Cards
-            Map<String, Card> cardMap = playerCards.stream()
-                    .collect(Collectors.toMap(Card::getName, Function.identity(), (a, b) -> a));
-
-            List<Card> finalDeck = new ArrayList<>();
-
-            // First add forced cards (to ensure they are present even if LLM hallucinates)
-            // Actually, easier to just accept LLM result but validate?
-            // Let's trust LLM result but fall back to replacements if LLM suggestions fail
-            // validation
-
-            for (LlmDeckSuggestion.LlmCardSuggestion s : suggestion.getCards()) {
-                if (cardMap.containsKey(s.getName())) {
-                    Card originalCard = cardMap.get(s.getName());
-                    boolean userHasEvolution = Boolean.TRUE.equals(originalCard.getEvolved());
-                    boolean userHasHeroForm = Boolean.TRUE.equals(originalCard.getIsHero());
-
-                    List<String> intendedEvos = suggestion.getSelectedEvolutions() != null
-                            ? suggestion.getSelectedEvolutions()
-                            : new ArrayList<>();
-                    List<String> intendedHeroes = suggestion.getSelectedHeroes() != null
-                            ? suggestion.getSelectedHeroes()
-                            : new ArrayList<>();
-
-                    originalCard.setEvolved(userHasEvolution && intendedEvos.contains(originalCard.getName()));
-                    originalCard.setIsHero(userHasHeroForm && intendedHeroes.contains(originalCard.getName()));
-                    finalDeck.add(originalCard);
-                }
             }
 
-            enforceSmartConstraints(finalDeck, playerResponse.getBestTrophies());
+            log.info("[StrategyChain] Trying {}...", strategy.name());
+            DeckBuildResult result = strategy.build(context);
 
-            // Validate and potentially mix in forced cards if missing?
-            // For MVP, if size != 8, we retry.
-            if (isValidDeck(finalDeck, playerResponse.getBestTrophies())) {
-                return buildResponse(finalDeck, suggestion, supportCards);
+            if (result != null && result.getDeck() != null && result.getDeck().size() == 8) {
+                log.info("[StrategyChain] ✓ {} produced a valid deck", strategy.name());
+                return result;
             }
-        }
 
-        return DeckResponse.builder().valid(false).tacticMessage("Failed to complete deck.").build();
+            log.info("[StrategyChain] {} did not produce a valid deck, trying next",
+                    strategy.name());
+        }
+        return null;
     }
 
-    private Card findSubstitute(Long targetId, List<Card> playerCards, List<Card> allCards) {
-        Card target = allCards.stream().filter(c -> c.getId().equals(targetId)).findFirst().orElse(null);
-        if (target == null)
-            return null;
+    // ══════════════════════════════════════════════
+    //  Response builder
+    // ══════════════════════════════════════════════
 
-        // Filter by same type if possible
-        List<Card> candidates = playerCards.stream()
-                .filter(c -> c.getType() != null && c.getType().equals(target.getType()))
-                .collect(Collectors.toList());
+    private DeckResponse buildResponse(DeckBuildResult result, List<CardDto> supportCards) {
+        List<Card> deck = result.getDeck();
 
-        if (candidates.isEmpty()) {
-            candidates = new ArrayList<>(playerCards); // Fallback to all cards
-        }
-
-        // Find closest elixir cost
-        final int targetCost = target.getElixirCost() != null ? target.getElixirCost() : 3;
-
-        return candidates.stream()
-                .min((c1, c2) -> {
-                    int dist1 = Math.abs((c1.getElixirCost() != null ? c1.getElixirCost() : 0) - targetCost);
-                    int dist2 = Math.abs((c2.getElixirCost() != null ? c2.getElixirCost() : 0) - targetCost);
-                    if (dist1 != dist2)
-                        return dist1 - dist2;
-                    // Secondary sort: Rarity match? High level?
-                    // Just use level for now
-                    return (c2.getLevel() != null ? c2.getLevel() : 0) - (c1.getLevel() != null ? c1.getLevel() : 0);
-                })
-                .orElse(null);
-    }
-
-    private DeckResponse buildResponse(List<Card> deck, LlmDeckSuggestion suggestion, List<CardDto> supportCards) {
         double avgElixir = deck.stream()
                 .mapToInt(c -> c.getElixirCost() != null ? c.getElixirCost() : 0)
                 .average().orElse(0.0);
 
-        // Sort for deep link: Evolved first, then Hero, then by elixir cost (matches
-        // frontend display order)
+        // Sort for deep link: Evolved first, then Hero, then by elixir cost
         List<Card> sortedDeck = deck.stream()
                 .sorted((a, b) -> {
                     int aEvo = Boolean.TRUE.equals(a.getEvolved()) ? 1 : 0;
                     int bEvo = Boolean.TRUE.equals(b.getEvolved()) ? 1 : 0;
-                    if (aEvo != bEvo)
-                        return bEvo - aEvo;
+                    if (aEvo != bEvo) return bEvo - aEvo;
                     int aHero = Boolean.TRUE.equals(a.getIsHero()) ? 1 : 0;
                     int bHero = Boolean.TRUE.equals(b.getIsHero()) ? 1 : 0;
-                    if (aHero != bHero)
-                        return bHero - aHero;
+                    if (aHero != bHero) return bHero - aHero;
                     return Integer.compare(
                             a.getElixirCost() != null ? a.getElixirCost() : 0,
                             b.getElixirCost() != null ? b.getElixirCost() : 0);
@@ -335,10 +205,11 @@ public class DeckService {
         String towerTroopName = null;
         String towerTroopImageUrl = null;
 
-        if (suggestion.getSelectedTowerTroop() != null && supportCards != null) {
-            String selectedName = suggestion.getSelectedTowerTroop();
+        if (result.getSelectedTowerTroop() != null && supportCards != null) {
+            String selectedName = result.getSelectedTowerTroop();
             CardDto matched = supportCards.stream()
-                    .filter(sc -> sc.getName() != null && sc.getName().equalsIgnoreCase(selectedName))
+                    .filter(sc -> sc.getName() != null
+                            && sc.getName().equalsIgnoreCase(selectedName))
                     .findFirst().orElse(null);
             if (matched != null) {
                 towerTroopId = matched.getId();
@@ -346,25 +217,11 @@ public class DeckService {
                 if (matched.getIconUrls() != null) {
                     towerTroopImageUrl = matched.getIconUrls().getMedium();
                 }
-            } else {
-                log.warn("LLM selected tower troop '{}' not found in supportCards, falling back to first",
-                        selectedName);
-                // Fallback: pick the highest-level tower troop
-                if (!supportCards.isEmpty()) {
-                    CardDto fallback = supportCards.stream()
-                            .max((a, b) -> Integer.compare(
-                                    a.getLevel() != null ? a.getLevel() : 0,
-                                    b.getLevel() != null ? b.getLevel() : 0))
-                            .orElse(supportCards.get(0));
-                    towerTroopId = fallback.getId();
-                    towerTroopName = fallback.getName();
-                    if (fallback.getIconUrls() != null) {
-                        towerTroopImageUrl = fallback.getIconUrls().getMedium();
-                    }
-                }
             }
-        } else if (supportCards != null && !supportCards.isEmpty()) {
-            // LLM didn't return a tower troop, fallback to highest level
+        }
+
+        // Fallback: pick highest-level tower troop
+        if (towerTroopId == null && supportCards != null && !supportCards.isEmpty()) {
             CardDto fallback = supportCards.stream()
                     .max((a, b) -> Integer.compare(
                             a.getLevel() != null ? a.getLevel() : 0,
@@ -377,9 +234,9 @@ public class DeckService {
             }
         }
 
-        // Build deep link with tower troop
-        String deepLink = "https://link.clashroyale.com/en/?clashroyale://copyDeck?deck=" + cardIds
-                + "&l=Royals";
+        // Build deep link
+        String deepLink = "https://link.clashroyale.com/en/?clashroyale://copyDeck?deck="
+                + cardIds + "&l=Royals";
         if (towerTroopId != null) {
             deepLink += "&tt=" + towerTroopId;
         }
@@ -387,8 +244,8 @@ public class DeckService {
         return DeckResponse.builder()
                 .deck(deck)
                 .valid(true)
-                .strategy(suggestion.getStrategy())
-                .tacticMessage(suggestion.getTactic())
+                .strategy(result.getStrategy())
+                .tacticMessage(result.getTacticMessage())
                 .averageElixir(Math.round(avgElixir * 10.0) / 10.0)
                 .deepLink(deepLink)
                 .towerTroopId(towerTroopId)
@@ -397,69 +254,130 @@ public class DeckService {
                 .build();
     }
 
-    private boolean isValidDeck(List<Card> deck, Integer maxTrophies) {
-        if (deck.size() != 8) {
-            log.error("deck size can't be greater than 8, current size:{}", deck.size());
-            return false;
-        }
+    // ══════════════════════════════════════════════
+    //  Helpers
+    // ══════════════════════════════════════════════
 
-        long heroCount = deck.stream().filter(c -> Boolean.TRUE.equals(c.getIsHero())).count();
-        long evolvedCount = deck.stream().filter(c -> Boolean.TRUE.equals(c.getEvolved())).count();
-
-        int trophies = maxTrophies != null ? maxTrophies : 0;
-
-        if (trophies < 3000) {
-            if (heroCount > 1 || evolvedCount > 1) {
-                log.error("Under 3000 trophies: max 1 hero & max 1 evo. Current Hero: {}, Evolved: {}", heroCount,
-                        evolvedCount);
-                return false;
-            }
-        } else {
-            if (heroCount + evolvedCount > 3) {
-                log.error("Over 3000 trophies: max 3 special cards total. Current Hero: {}, Evolved: {}", heroCount,
-                        evolvedCount);
-                return false;
-            }
-            if (heroCount > 2) {
-                log.error("Hero count can't be greater than 2, current: {}", heroCount);
-                return false;
-            }
-            if (evolvedCount > 2) {
-                log.error("Evolved count can't be greater than 2, current: {}", evolvedCount);
-                return false;
-            }
-        }
-
-        return true;
+    /**
+     * Enriches player cards from the API response with full card data
+     * (elixir cost, images, type, rarity) from the cached all-cards list.
+     */
+    private List<Card> enrichPlayerCards(ClashApiResponse playerResponse) {
+        List<Card> cachedAllCards = clashService.getAllCards();
+        return playerResponse.getCards().stream()
+                .map(dto -> {
+                    Card playerCard = clashService.mapToCard(dto);
+                    Card fullCard = cachedAllCards.stream()
+                            .filter(c -> c.getId() != null && c.getId().equals(playerCard.getId()))
+                            .findFirst().orElse(null);
+                    if (fullCard != null) {
+                        playerCard.setElixirCost(fullCard.getElixirCost());
+                        playerCard.setImageUri(fullCard.getImageUri());
+                        playerCard.setImageUriEvolved(fullCard.getImageUriEvolved());
+                        playerCard.setImageUriHero(fullCard.getImageUriHero());
+                        playerCard.setType(fullCard.getType());
+                        playerCard.setRarity(fullCard.getRarity());
+                    }
+                    return playerCard;
+                })
+                .toList();
     }
 
-    private void enforceSmartConstraints(List<Card> deck, Integer maxTrophies) {
-        int limit = (maxTrophies != null && maxTrophies >= 3000) ? 3 : 2;
-        int maxEvos = (maxTrophies != null && maxTrophies >= 3000) ? 2 : 1;
+    /**
+     * Resolves partial deck card IDs to card names.
+     * If a card ID is not in the user's collection, finds a substitute.
+     */
+    private List<String> resolveLockedCards(List<Long> partialDeckIds,
+                                             List<Card> playerCards,
+                                             List<Card> allCards) {
+        List<String> names = new ArrayList<>();
+        if (partialDeckIds == null) return names;
 
-        long heroCount = deck.stream().filter(c -> Boolean.TRUE.equals(c.getIsHero())).count();
-        long availableEvoSlots = Math.min(maxEvos, limit - heroCount);
-
-        int grantedEvoCount = 0;
-        for (Card card : deck) {
-            if (Boolean.TRUE.equals(card.getEvolved())) {
-                if (grantedEvoCount < availableEvoSlots) {
-                    grantedEvoCount++;
+        for (Long id : partialDeckIds) {
+            Card owned = playerCards.stream()
+                    .filter(c -> c.getId().equals(id)).findFirst().orElse(null);
+            if (owned != null) {
+                names.add(owned.getName());
+            } else {
+                Card substitute = findSubstitute(id, playerCards, allCards);
+                if (substitute != null) {
+                    log.info("Substituting missing card ID {} with {}", id, substitute.getName());
+                    names.add(substitute.getName());
                 } else {
-                    card.setEvolved(false);
-                    log.info("Smart-clamped excess evolution for {} to strictly obey limit", card.getName());
+                    log.warn("Could not find substitute for ID {}", id);
                 }
             }
         }
+        return names;
     }
 
-    private SimplifiedCard toSimplified(Card card) {
-        return SimplifiedCard.builder()
-                .name(card.getName())
-                .level(card.getLevel())
-                .isEvolved(Boolean.TRUE.equals(card.getEvolved()))
-                .isHero(Boolean.TRUE.equals(card.getIsHero()))
-                .elixirCost(card.getElixirCost())
-                .build();
+    private Card findSubstitute(Long targetId, List<Card> playerCards, List<Card> allCards) {
+        Card target = allCards.stream()
+                .filter(c -> c.getId().equals(targetId)).findFirst().orElse(null);
+        if (target == null) return null;
+
+        List<Card> candidates = playerCards.stream()
+                .filter(c -> c.getType() != null && c.getType().equals(target.getType()))
+                .collect(Collectors.toList());
+
+        if (candidates.isEmpty()) {
+            candidates = new ArrayList<>(playerCards);
+        }
+
+        final int targetCost = target.getElixirCost() != null ? target.getElixirCost() : 3;
+
+        return candidates.stream()
+                .min((c1, c2) -> {
+                    int dist1 = Math.abs((c1.getElixirCost() != null ? c1.getElixirCost() : 0) - targetCost);
+                    int dist2 = Math.abs((c2.getElixirCost() != null ? c2.getElixirCost() : 0) - targetCost);
+                    if (dist1 != dist2) return dist1 - dist2;
+                    return (c2.getLevel() != null ? c2.getLevel() : 0)
+                            - (c1.getLevel() != null ? c1.getLevel() : 0);
+                })
+                .orElse(null);
+    }
+
+    private void saveUserInfo(String playerTag, ClashApiResponse playerResponse) {
+        try {
+            UserEntity userEntity = userRepository.findById(playerTag)
+                    .orElse(new UserEntity());
+
+            Long towerTroopId = null;
+            if (playerResponse.getCurrentDeckSupportCards() != null
+                    && !playerResponse.getCurrentDeckSupportCards().isEmpty()) {
+                towerTroopId = playerResponse.getCurrentDeckSupportCards().get(0).getId();
+            }
+
+            mapToUserEntity(userEntity,
+                    playerResponse.getTag(),
+                    playerResponse.getName(),
+                    Integer.valueOf(playerResponse.getTrophies()),
+                    playerResponse.getBestTrophies(),
+                    playerResponse.getCurrentDeck(),
+                    towerTroopId);
+            userRepository.save(userEntity);
+            log.info("User info saved: {}", userEntity);
+        } catch (Exception e) {
+            log.error("Failed to save user info for {}", playerTag, e);
+        }
+    }
+
+    private UserEntity mapToUserEntity(UserEntity userEntity, String tag, String name,
+                                        Integer trophies, Integer bestTrophies,
+                                        List<CardDto> currentDeck, Long towerTroopId) {
+        if (userEntity.getPlayerTag() == null) {
+            userEntity.setPlayerTag(tag);
+            userEntity.setDeckGenerationCount(1);
+        } else {
+            userEntity.setDeckGenerationCount(userEntity.getDeckGenerationCount() + 1);
+        }
+
+        userEntity.setPlayerName(name);
+        userEntity.setCurrentTrophies(trophies);
+        userEntity.setBestTrophies(bestTrophies);
+        userEntity.setLastCurrentDeck(DeckSignatureUtil.cardsToJson(currentDeck));
+        userEntity.setDeckKey(DeckSignatureUtil.generateSignature(currentDeck, towerTroopId));
+        userEntity.setLastOperationDate(LocalDateTime.now());
+        return userEntity;
     }
 }

@@ -14,7 +14,7 @@ import java.util.stream.Collectors;
 public class WinConditionRegistry {
 
     // Map<CardName, GameType>
-    private static final Map<String, String> WIN_CONDITIONS;
+    public static final Map<String, String> WIN_CONDITIONS;
 
     static {
         Map<String, String> map = new LinkedHashMap<>();
@@ -31,10 +31,15 @@ public class WinConditionRegistry {
         map.put("Lava Hound", "Beatdown");
         map.put("Royal Giant", "Beatdown");
 
+        // Bridge Spam / Pressure
+        map.put("P.E.K.K.A", "Bridge Spam");
+        map.put("Mega Knight", "Bridge Spam");
+        map.put("Elite Barbarians", "Bridge Spam");
+        map.put("Ram Rider", "Bridge Spam");
+        map.put("Battle Ram", "Bridge Spam");
+
         // Cycle/Control
         map.put("Hog Rider", "Cycle/Control");
-        map.put("Ram Rider", "Cycle/Control");
-        map.put("Battle Ram", "Cycle/Control");
         map.put("Royal Hogs", "Cycle/Control");
         map.put("Balloon", "Cycle/Control");
         map.put("Miner", "Cycle/Control");
@@ -45,6 +50,12 @@ public class WinConditionRegistry {
         map.put("Skeleton Barrel", "Bait/Special");
         map.put("Wall Breakers", "Bait/Special");
         map.put("Three Musketeers", "Bait/Special");
+        map.put("Goblin Drill", "Bait/Special");
+
+        // Hybrid / Key Cards (can serve as primary WC in certain archetypes)
+        map.put("Sparky", "Hybrid");
+        map.put("Prince", "Hybrid");
+        map.put("Skeleton King", "Hybrid");
 
         WIN_CONDITIONS = Collections.unmodifiableMap(map);
     }

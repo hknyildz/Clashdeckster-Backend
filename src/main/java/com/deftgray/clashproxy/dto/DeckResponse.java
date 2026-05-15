@@ -18,4 +18,5 @@ public class DeckResponse {
     private Long towerTroopId;
     private String towerTroopName;
     private String towerTroopImageUrl;
+    private String winCondition;
 }

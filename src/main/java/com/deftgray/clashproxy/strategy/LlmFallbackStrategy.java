@@ -53,8 +53,13 @@ public class LlmFallbackStrategy implements DeckBuildStrategy {
         boolean isAdvancedBuilder = context.getLockedCardNames() != null
                 && !context.getLockedCardNames().isEmpty();
 
+        // Thread-safe log tag
+        String logTag = context.getForcedWinCondition() != null
+                ? name() + "|" + context.getForcedWinCondition()
+                : name();
+
         // ─── Build meta context for the LLM prompt ───
-        String metaContext = buildMetaContextForLlm(context, userCards);
+        String metaContext = buildMetaContextForLlm(context, userCards, logTag);
 
         // ─── Simplify cards for LLM ───
         List<SimplifiedCard> simplified = userCards.stream()
@@ -67,7 +72,7 @@ public class LlmFallbackStrategy implements DeckBuildStrategy {
         List<String> previousErrors = new ArrayList<>();
 
         for (int i = 0; i < MAX_RETRIES; i++) {
-            log.info("[{}] Attempt {}/{}", name(), i + 1, MAX_RETRIES);
+            log.info("[{}] Attempt {}/{}", logTag, i + 1, MAX_RETRIES);
 
             LlmDeckSuggestion suggestion;
             if (isAdvancedBuilder) {
@@ -78,19 +83,21 @@ public class LlmFallbackStrategy implements DeckBuildStrategy {
             } else {
                 suggestion = llmService.generateDeckRecommendation(
                         simplified, context.getBestTrophies(),
-                        context.getSupportCards(), metaContext, previousErrors);
+                        context.getSupportCards(), metaContext, previousErrors,
+                        context.getForcedWinCondition(), context.getForcedGameType(),
+                        java.util.Set.of(), java.util.Map.of());
             }
 
             if (suggestion == null || suggestion.getCards() == null
                     || suggestion.getCards().isEmpty()) {
-                log.warn("[{}] LLM returned empty suggestion", name());
+                log.warn("[{}] LLM returned empty suggestion", logTag);
                 previousErrors.add("LLM returned empty or null response.");
                 continue;
             }
 
             // Map LLM result back to Card objects
             List<Card> deck = new ArrayList<>();
-            boolean hasValidationError = false;
+            List<String> validationErrors = new ArrayList<>();
             for (LlmDeckSuggestion.LlmCardSuggestion cs : suggestion.getCards()) {
                 Card card = cardMap.get(cs.getName());
                 if (card != null) {
@@ -109,23 +116,28 @@ public class LlmFallbackStrategy implements DeckBuildStrategy {
                     deck.add(card);
                 } else {
                     log.warn("[{}] LLM suggested '{}' not in collection", name(), cs.getName());
-                    previousErrors.add("Card '" + cs.getName() + "' is NOT in the player's collection.");
-                    hasValidationError = true;
+                    validationErrors.add("Card '" + cs.getName() + "' is NOT in the player's collection.");
                 }
             }
 
+            if (!validationErrors.isEmpty()) {
+                log.warn("[{}] Validation failed ({} errors): {}",
+                        logTag, validationErrors.size(), validationErrors);
+                previousErrors.addAll(validationErrors);
+                continue;
+            }
+
             if (deck.size() != 8) {
-                log.warn("[{}] Deck size {} ≠ 8", name(), deck.size());
-                previousErrors.add("Deck size was " + deck.size() + " instead of 8.");
+                String err = "Deck size is " + deck.size() + " instead of 8. You must select exactly 8 cards.";
+                log.warn("[{}] {}", logTag, err);
+                previousErrors.add(err);
                 continue;
             }
 
-            if (hasValidationError) {
-                continue;
-            }
-
-            log.info("[{}] ✓ Deck built via LLM — strategy: {}", name(),
-                    suggestion.getStrategy());
+            log.info("[{}] ═══ BUILD SUCCESS (FALLBACK) ═══ strategy={}, deck=[{}]",
+                    logTag, suggestion.getStrategy(),
+                    deck.stream().map(c -> c.getName() + "(L" + c.getLevel() + ")")
+                            .collect(Collectors.joining(", ")));
 
             return DeckBuildResult.builder()
                     .deck(deck)
@@ -136,17 +148,16 @@ public class LlmFallbackStrategy implements DeckBuildStrategy {
                     .build();
         }
 
-        log.error("[{}] All {} retries exhausted", name(), MAX_RETRIES);
+        log.error("[{}] ═══ BUILD FAILED (FALLBACK) ═══ All {} retries exhausted", logTag, MAX_RETRIES);
         return null;
     }
 
     // ──────────────────────────────────────────────
 
-    private String buildMetaContextForLlm(DeckBuildContext context, List<Card> userCards) {
-        // Try to find an anchor WC for meta context
-        String anchorWC = null;
+    private String buildMetaContextForLlm(DeckBuildContext context, List<Card> userCards, String logTag) {
+        String anchorWC = context.getForcedWinCondition();
 
-        if (context.getLockedCardNames() != null) {
+        if (anchorWC == null && context.getLockedCardNames() != null) {
             anchorWC = context.getLockedCardNames().stream()
                     .filter(WinConditionRegistry.WIN_CONDITIONS::containsKey)
                     .findFirst().orElse(null);
@@ -163,19 +174,23 @@ public class LlmFallbackStrategy implements DeckBuildStrategy {
 
         List<MetaDeckEntity> wcDecks = metaSynergyService.findByWinCondition(anchorWC);
         if (wcDecks.isEmpty()) {
-            log.info("[{}] No meta decks found for WC: {}", name(), anchorWC);
+            log.info("[{}] No meta decks found for WC: {}", logTag, anchorWC);
             return "";
         }
 
         // Log the exact meta decks we are sending to the LLM (top 3)
         List<MetaDeckEntity> topDecks = wcDecks.stream().limit(3).toList();
-        log.info("[{}] Passing {} meta decks to LLM for WC: {}", name(), topDecks.size(), anchorWC);
+        log.info("[{}] Passing {} meta decks to LLM for WC: {}", logTag, topDecks.size(), anchorWC);
         for (int i = 0; i < topDecks.size(); i++) {
             List<String> cardNames = metaSynergyService.parseCardNames(topDecks.get(i).getCardsJson());
-            log.info("[{}] Reference Meta Deck {}: {}", name(), i + 1, String.join(", ", cardNames));
+            log.info("[{}] Reference Meta Deck {}: {}", logTag, i + 1, String.join(", ", cardNames));
         }
 
-        return metaSynergyService.buildMetaContext(anchorWC, wcDecks);
+        // Build card lookup for ownership annotation
+        Map<String, Card> cardMap = userCards.stream()
+                .collect(java.util.stream.Collectors.toMap(Card::getName, c -> c, (a, b) -> a));
+
+        return metaSynergyService.buildMetaContext(anchorWC, wcDecks, cardMap);
     }
 
     private SimplifiedCard toSimplified(Card card) {

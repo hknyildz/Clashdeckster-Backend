@@ -51,13 +51,27 @@ public class Controller {
     }
 
     @GetMapping("/freeDeck/{tag}")
-    public DeckResponse getFreeDeck(@PathVariable String tag) {
+    public List<DeckResponse> getFreeDeck(@PathVariable String tag) {
         log.info("=== Free Deck Request === tag: {}", tag);
-        DeckResponse response = deckService.generateFreeDeck(tag);
-        log.info("=== Free Deck Response === valid: {}, strategy: {}, towerTroop: {}",
-                response.isValid(), response.getStrategy(),
-                response.getTowerTroopName() != null ? response.getTowerTroopName() : "none");
+        List<DeckResponse> response = deckService.generateFreeDeck(tag);
+        log.info("=== Free Deck Response === count: {}, strategies: {}",
+                response.size(),
+                response.stream().map(DeckResponse::getStrategy)
+                        .collect(java.util.stream.Collectors.joining(", ")));
         return response;
+    }
+
+    /**
+     * SSE streaming endpoint: sends each deck as a separate event as soon as it's ready.
+     * Events: "deck" (individual deck), "done" (all complete), "error" (failure).
+     */
+    @GetMapping(value = "/freeDeck/{tag}/stream", produces = org.springframework.http.MediaType.TEXT_EVENT_STREAM_VALUE)
+    public org.springframework.web.servlet.mvc.method.annotation.SseEmitter streamFreeDeck(@PathVariable String tag) {
+        log.info("=== Free Deck Stream Request === tag: {}", tag);
+        org.springframework.web.servlet.mvc.method.annotation.SseEmitter emitter =
+                new org.springframework.web.servlet.mvc.method.annotation.SseEmitter(120_000L); // 2 min timeout
+        deckService.generateFreeDeckStream(tag, emitter);
+        return emitter;
     }
 
     @PostMapping("/decks/complete")

@@ -34,4 +34,10 @@ public class DeckBuildContext {
 
     /** User's chosen play style label (Advanced Builder only). */
     private String playStyle;
+
+    /** Forced anchor WC name. If set, MetaLlmStrategy uses this instead of auto-detecting. */
+    private String forcedWinCondition;
+
+    /** Forced game type corresponding to the forced WC (e.g. Beatdown, Cycle). */
+    private String forcedGameType;
 }

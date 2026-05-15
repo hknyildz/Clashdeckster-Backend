@@ -158,15 +158,63 @@ public class MetaDeckJob {
                 successCount, playerTags.size(), skipCount);
         log.info("[MetaDeckJob] Unique decks found: {}", deckMap.size());
 
-        // ─── Step 4: Sort by usage count & take top N ───
-        List<AggregatedDeck> sortedDecks = deckMap.values().stream()
+        // ─── Step 4: Sort by usage count & ensure WC coverage ───
+        List<AggregatedDeck> allSorted = deckMap.values().stream()
                 .sorted(Comparator.comparingInt((AggregatedDeck d) -> d.usageCount).reversed())
-                .limit(topDeckLimit)
                 .collect(Collectors.toList());
 
+        // Take top N by popularity first
+        List<AggregatedDeck> selectedDecks = new ArrayList<>(
+                allSorted.stream().limit(topDeckLimit).toList());
+        Set<String> selectedKeys = selectedDecks.stream()
+                .map(d -> d.deckKey).collect(Collectors.toSet());
+
+        // WC Coverage Guarantee: ensure at least 3 decks per WC in WinConditionRegistry
+        int minDecksPerWC = 3;
+        Map<String, Long> wcCoverage = new HashMap<>();
+        for (String wc : WinConditionRegistry.WIN_CONDITIONS.keySet()) {
+            long count = selectedDecks.stream()
+                    .filter(d -> d.winConditions != null && d.winConditions.contains(wc))
+                    .count();
+            wcCoverage.put(wc, count);
+        }
+
+        List<String> underRepresented = wcCoverage.entrySet().stream()
+                .filter(e -> e.getValue() < minDecksPerWC)
+                .map(Map.Entry::getKey)
+                .toList();
+
+        if (!underRepresented.isEmpty()) {
+            log.info("[MetaDeckJob] Under-represented WCs (< {} decks): {}", minDecksPerWC, underRepresented);
+
+            for (String wc : underRepresented) {
+                long currentCount = wcCoverage.get(wc);
+                long needed = minDecksPerWC - currentCount;
+
+                // Find decks containing this WC from the remaining pool
+                List<AggregatedDeck> candidates = allSorted.stream()
+                        .filter(d -> !selectedKeys.contains(d.deckKey))
+                        .filter(d -> d.winConditions != null && d.winConditions.contains(wc))
+                        .limit(needed)
+                        .toList();
+
+                for (AggregatedDeck candidate : candidates) {
+                    selectedDecks.add(candidate);
+                    selectedKeys.add(candidate.deckKey);
+                    log.info("[MetaDeckJob]   + Added deck for WC '{}': [{}] ({} users)",
+                            wc, candidate.cards.stream().map(CardDto::getName)
+                                    .collect(Collectors.joining(", ")), candidate.usageCount);
+                }
+            }
+        }
+
+        log.info("[MetaDeckJob] Final deck count: {} (top {} + {} WC coverage additions)",
+                selectedDecks.size(), topDeckLimit,
+                selectedDecks.size() - Math.min(topDeckLimit, allSorted.size()));
+
         // Log top 5
-        for (int i = 0; i < Math.min(5, sortedDecks.size()); i++) {
-            AggregatedDeck d = sortedDecks.get(i);
+        for (int i = 0; i < Math.min(5, selectedDecks.size()); i++) {
+            AggregatedDeck d = selectedDecks.get(i);
             String cardNames = d.cards.stream()
                     .map(CardDto::getName)
                     .collect(Collectors.joining(", "));
@@ -183,8 +231,8 @@ public class MetaDeckJob {
         metaDeckRepository.deleteByLastUpdatedBefore(ninetyDaysAgo);
 
         List<MetaDeckEntity> entities = new ArrayList<>();
-        for (int i = 0; i < sortedDecks.size(); i++) {
-            AggregatedDeck d = sortedDecks.get(i);
+        for (int i = 0; i < selectedDecks.size(); i++) {
+            AggregatedDeck d = selectedDecks.get(i);
             entities.add(MetaDeckEntity.builder()
                     .deckKey(d.deckKey)
                             .snapshotDate(LocalDate.now())

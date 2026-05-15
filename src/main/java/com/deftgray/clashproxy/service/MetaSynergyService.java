@@ -43,17 +43,27 @@ public class MetaSynergyService {
 
     // ─── Co-occurrence thresholds ───
     /** Cards appearing together in ≥ this % are considered an inseparable combo. */
-    public static final double COMBO_THRESHOLD = 80.0;
+    public static final double COMBO_THRESHOLD = 70.0;
     /** Cards appearing together in ≥ this % are strong associations. */
     public static final double STRONG_THRESHOLD = 40.0;
     /** Minimum number of meta decks containing a WC before co-occurrence is trustworthy. */
-    private static final int MIN_SAMPLE_SIZE = 5;
+    private static final int MIN_SAMPLE_SIZE = 2;
 
     // ─── Dynamic WC thresholds ───
     /** Card must appear in at least this % of meta decks to be considered a dynamic WC. */
     private static final double DYNAMIC_WC_MIN_FREQUENCY = 5.0;
     /** Cards appearing in more than this % are "universal" (Log, Arrows) not WCs. */
     private static final double DYNAMIC_WC_MAX_FREQUENCY = 60.0;
+
+    private static final Map<String, String> CARD_TYPE_MAP = Map.ofEntries(
+            Map.entry("The Log", "Small Spell"), Map.entry("Zap", "Small Spell"),
+            Map.entry("Arrows", "Small Spell"), Map.entry("Fireball", "Big Spell"),
+            Map.entry("Poison", "Big Spell"), Map.entry("Rocket", "Big Spell"),
+            Map.entry("Tesla", "Building"), Map.entry("Inferno Tower", "Building"),
+            Map.entry("Cannon", "Building"), Map.entry("Knight", "Troop"),
+            Map.entry("Valkyrie", "Troop"), Map.entry("Musketeer", "Troop"),
+            Map.entry("Ice Spirit", "Cycle"), Map.entry("Skeletons", "Cycle")
+    );
 
     // ──────────────────────────────────────────────
     //  1. Cached meta-deck access + dynamic analysis
@@ -273,12 +283,19 @@ public class MetaSynergyService {
 
     /**
      * Scores how well a user's card collection fits a specific meta deck.
+     * Now considers evolved/hero form compatibility.
      *
-     * Scoring:
+     * Scoring per card:
      *   +3  card exists in user's collection (exact name match)
-     *   +1  user has a card of the same type (potential replacement)
+     *   +1  bonus if meta uses EVOLVED form and user has evo unlocked
+     *   +2  bonus if meta uses HERO form and user has hero unlocked
+     *   -2  penalty if meta uses evo but user does NOT have that form
+     *   -4  penalty if meta uses hero but user does NOT have that form (hero changes mechanics)
+     *   +1  user has a card of the same type (potential replacement, card NOT owned)
      *   +0  no viable replacement available
-     *   +2  bonus if meta deck is in the top 10 by popularity
+     *
+     * Global bonuses:
+     *   +2  if meta deck is in the top 10 by popularity
      *
      * @return integer score (higher = better fit)
      */
@@ -287,9 +304,12 @@ public class MetaSynergyService {
                                     Set<String> usedNames) {
         List<String> metaCardNames = parseCardNames(metaDeck.getCardsJson());
         Map<String, String> metaCardTypes = parseCardTypes(metaDeck.getCardsJson());
+        Set<String> evolvedCards = parseEvolvedCardNames(metaDeck.getCardsJson());
+        Set<String> heroCards = parseHeroCardNames(metaDeck.getCardsJson());
 
-        Set<String> userCardNames = userCards.stream()
-                .map(Card::getName).collect(Collectors.toSet());
+        // Build user lookup maps
+        Map<String, Card> userCardMap = userCards.stream()
+                .collect(Collectors.toMap(Card::getName, c -> c, (a, b) -> a));
         Set<String> userCardTypes = userCards.stream()
                 .map(Card::getType).filter(Objects::nonNull).collect(Collectors.toSet());
 
@@ -297,9 +317,28 @@ public class MetaSynergyService {
         for (String metaCard : metaCardNames) {
             if (usedNames != null && usedNames.contains(metaCard)) {
                 score += 3;
-            } else if (userCardNames.contains(metaCard)) {
+            } else if (userCardMap.containsKey(metaCard)) {
                 score += 3;
+
+                // Evo form bonus/penalty (stat changes only)
+                Card userCard = userCardMap.get(metaCard);
+                if (evolvedCards.contains(metaCard)) {
+                    if (Boolean.TRUE.equals(userCard.getEvolved())) {
+                        score += 1; // User has evo → perfect match
+                    } else {
+                        score -= 2; // Meta uses evo but user doesn't have it
+                    }
+                }
+                // Hero form bonus/penalty (mechanic-changing — heavier weight)
+                if (heroCards.contains(metaCard)) {
+                    if (Boolean.TRUE.equals(userCard.getIsHero())) {
+                        score += 2; // User has hero → perfect match (higher bonus)
+                    } else {
+                        score -= 4; // Meta uses hero but user doesn't → deck archetype breaks
+                    }
+                }
             } else {
+                // Card not in collection — check type replacement
                 String type = metaCardTypes.get(metaCard);
                 if (type != null && userCardTypes.contains(type)) {
                     score += 1;
@@ -315,6 +354,54 @@ public class MetaSynergyService {
         return score;
     }
 
+    /**
+     * Calculates how viable a Win Condition is for a specific user's collection.
+     * Considers: card level, average match score against meta decks, evo/hero compatibility.
+     *
+     * @param wcName     Win condition card name
+     * @param userCards  User's full card collection
+     * @return viability score (higher = better fit for this user)
+     */
+    public double calculateWCViability(String wcName, List<Card> userCards) {
+        // 1. Find the user's WC card
+        Card wcCard = userCards.stream()
+                .filter(c -> c.getName().equals(wcName))
+                .findFirst().orElse(null);
+        if (wcCard == null) return 0.0;
+
+        double levelScore = wcCard.getLevel() != null ? wcCard.getLevel() : 0;
+
+        // 2. Find meta decks containing this WC (check all WCs in the deck)
+        List<MetaDeckEntity> wcDecks = findByWinCondition(wcName);
+        if (wcDecks.isEmpty()) {
+            // Also try card-in-deck search
+            wcDecks = findByCardInDeck(wcName);
+        }
+
+        if (wcDecks.isEmpty()) {
+            // No meta reference at all — viability is just the card level (low confidence)
+            return levelScore * 0.3;
+        }
+
+        // 3. Calculate average match score of TOP 3 best-fitting meta decks
+        //    (not all — we don't want bad-fit decks dragging down a good WC)
+        double avgMatchScore = wcDecks.stream()
+                .mapToInt(d -> calculateMatchScore(d, userCards, null))
+                .sorted()              // ascending
+                .skip(Math.max(0, wcDecks.size() - 3)) // keep top 3
+                .average()
+                .orElse(0.0);
+
+        // 4. Composite score: level matters 30%, meta match matters 70%
+        double viability = (levelScore * 0.3) + (avgMatchScore * 0.7);
+
+        log.info("[MetaSynergy] WC Viability for '{}': level={}, top3AvgMatch={}, viability={} (from {} meta decks)",
+                wcName, (int) levelScore, String.format("%.1f", avgMatchScore),
+                String.format("%.1f", viability), wcDecks.size());
+
+        return viability;
+    }
+
     // ──────────────────────────────────────────────
     //  7. LLM meta-context builder (for fallback)
     // ──────────────────────────────────────────────
@@ -325,7 +412,8 @@ public class MetaSynergyService {
      * and co-occurrence data.
      */
     public String buildMetaContext(String anchorCard,
-                                    List<MetaDeckEntity> relevantDecks) {
+                                    List<MetaDeckEntity> relevantDecks,
+                                    Map<String, com.deftgray.clashproxy.model.Card> userCardMap) {
         if (relevantDecks == null || relevantDecks.isEmpty()) return "";
 
         StringBuilder sb = new StringBuilder();
@@ -339,16 +427,26 @@ public class MetaSynergyService {
             Set<String> evolvedCards = parseEvolvedCardNames(d.getCardsJson());
             Map<String, Integer> elixirCosts = parseCardElixirCosts(d.getCardsJson());
 
-            sb.append(String.format("Reference Deck %d (%d users, type: %s, avg elixir: %.1f):\n",
+            sb.append(String.format("Reference Deck %d (%d users, type: %s, winCons: %s, avg elixir: %.1f):\n",
                     i + 1, d.getUsageCount(),
                     d.getGameType() != null ? d.getGameType() : "Unknown",
+                    d.getWinConditions() != null ? d.getWinConditions() : "None",
                     d.getAverageElixir() != null ? d.getAverageElixir() : 0.0));
 
             for (String name : names) {
                 int cost = elixirCosts.getOrDefault(name, 0);
                 boolean isEvo = evolvedCards.contains(name);
-                sb.append(String.format("  - %s (%d elixir%s)\n", name, cost,
-                        isEvo ? ", EVOLVED" : ""));
+
+                // Ownership annotation
+                if (userCardMap != null && userCardMap.containsKey(name)) {
+                    com.deftgray.clashproxy.model.Card userCard = userCardMap.get(name);
+                    int userLevel = userCard.getLevel() != null ? userCard.getLevel() : 0;
+                    sb.append(String.format("  - %s (%d elixir%s) ✓ OWNED Lvl:%d\n",
+                            name, cost, isEvo ? ", EVOLVED" : "", userLevel));
+                } else {
+                    sb.append(String.format("  - %s (%d elixir%s) ✗ NOT OWNED → find replacement\n",
+                            name, cost, isEvo ? ", EVOLVED" : ""));
+                }
             }
         }
 
@@ -406,12 +504,34 @@ public class MetaSynergyService {
         }
     }
 
+    /** Extract names of cards that are in hero form in the meta deck (evolutionLevel=2). */
+    public Set<String> parseHeroCardNames(String cardsJson) {
+        try {
+            JsonNode arr = objectMapper.readTree(cardsJson);
+            Set<String> heroes = new HashSet<>();
+            for (JsonNode node : arr) {
+                if (node.has("name") && node.has("evolutionLevel")) {
+                    int evoLevel = node.get("evolutionLevel").asInt(0);
+                    if (evoLevel == 2) {
+                        heroes.add(node.get("name").asText());
+                    }
+                }
+            }
+            return heroes;
+        } catch (Exception e) {
+            log.warn("[MetaSynergy] Failed to parse hero cards from cards_json", e);
+            return Set.of();
+        }
+    }
+
     /** Extract card name → type mapping from a cards_json string. */
     private Map<String, String> parseCardTypes(String cardsJson) {
-        // cards_json currently stores: id, name, evolutionLevel, elixirCost
-        // type is NOT stored in cards_json — we return empty map.
-        // Match scoring uses user's type data as fallback.
-        return Map.of();
+        List<String> names = parseCardNames(cardsJson);
+        Map<String, String> types = new HashMap<>();
+        for (String name : names) {
+            types.put(name, CARD_TYPE_MAP.getOrDefault(name, "Troop")); // Default Troop
+        }
+        return types;
     }
 
     /** Extract card name → elixirCost mapping from a cards_json string. */

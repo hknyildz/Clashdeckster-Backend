@@ -28,4 +28,7 @@ public class DeckBuildResult {
 
     /** Selected tower troop name (may be null). */
     private String selectedTowerTroop;
+
+    /** Win condition card name used as anchor (e.g. "Miner", "Hog Rider"). */
+    private String winCondition;
 }

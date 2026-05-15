@@ -12,12 +12,15 @@ import com.deftgray.clashproxy.repository.UserRepository;
 import com.deftgray.clashproxy.strategy.DeckBuildContext;
 import com.deftgray.clashproxy.strategy.DeckBuildResult;
 import com.deftgray.clashproxy.strategy.DeckBuildStrategy;
+import com.deftgray.clashproxy.strategy.MetaLlmStrategy;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
+import java.util.concurrent.CompletableFuture;
 import java.util.stream.Collectors;
 
 /**
@@ -32,6 +35,7 @@ public class DeckService {
     private final ClashService clashService;
     private final UserRepository userRepository;
     private final List<DeckBuildStrategy> strategies;
+    private final MetaLlmStrategy metaLlmStrategy;
 
     /**
      * Spring injects all DeckBuildStrategy beans.
@@ -39,12 +43,14 @@ public class DeckService {
      */
     public DeckService(ClashService clashService,
                        UserRepository userRepository,
-                       List<DeckBuildStrategy> strategies) {
+                       List<DeckBuildStrategy> strategies,
+                       MetaLlmStrategy metaLlmStrategy) {
         this.clashService = clashService;
         this.userRepository = userRepository;
         // Sort: MetaLlmStrategy first (@Order(1)), LlmFallbackStrategy last (@Order(2))
         // If we need explicit ordering later, use @Order annotation
         this.strategies = strategies;
+        this.metaLlmStrategy = metaLlmStrategy;
         log.info("DeckService initialized with {} strategies: {}",
                 strategies.size(),
                 strategies.stream().map(DeckBuildStrategy::name)
@@ -55,45 +61,176 @@ public class DeckService {
     //  Quick Generate
     // ══════════════════════════════════════════════
 
-    public DeckResponse generateFreeDeck(String playerTag) {
-        log.info("Generating free deck for player: {}", playerTag);
+    public List<DeckResponse> generateFreeDeck(String playerTag) {
+        log.info("Generating multi-deck for player: {}", playerTag);
 
         // 1. Fetch & enrich player cards
         ClashApiResponse playerResponse = clashService.getPlayerCards(playerTag);
         if (playerResponse == null || playerResponse.getCards() == null
                 || playerResponse.getCards().isEmpty()) {
             log.warn("No cards found for player: {}", playerTag);
-            return DeckResponse.builder().valid(false).strategy("N/A")
-                    .tacticMessage("Player not found or no cards available.").build();
+            return List.of(DeckResponse.builder().valid(false).strategy("N/A")
+                    .tacticMessage("Player not found or no cards available.").build());
         }
 
         List<Card> playerCards = enrichPlayerCards(playerResponse);
         List<CardDto> supportCards = playerResponse.getSupportCards();
+        Integer bestTrophies = playerResponse.getBestTrophies();
 
-        // 2. Build context
-        DeckBuildContext context = DeckBuildContext.builder()
-                .playerCards(playerCards)
-                .bestTrophies(playerResponse.getBestTrophies())
-                .supportCards(supportCards)
-                .playerTag(playerTag)
-                .build();
+        // 2. Find top 3 WCs from user's collection
+        List<String> topWCs = metaLlmStrategy.findTopWinConditions(playerCards, 3);
+        if (topWCs.isEmpty()) {
+            log.info("No WCs found, falling back to single deck generation");
+            topWCs = List.of((String) null); // null = auto-detect
+        }
+        log.info("Top WCs for multi-deck: {}", topWCs);
 
-        // 3. Run strategy chain
-        DeckBuildResult result = runStrategyChain(context);
+        // 3. Fire parallel LLM calls — one per WC
+        final List<Card> finalPlayerCards = playerCards;
+        List<CompletableFuture<DeckBuildResult>> futures = topWCs.stream()
+                .map(wc -> CompletableFuture.supplyAsync(() -> {
+                    String gameType = wc != null ? com.deftgray.clashproxy.meta.WinConditionRegistry.WIN_CONDITIONS.get(wc) : null;
+                    DeckBuildContext ctx = DeckBuildContext.builder()
+                            .playerCards(finalPlayerCards)
+                            .bestTrophies(bestTrophies)
+                            .supportCards(supportCards)
+                            .playerTag(playerTag)
+                            .forcedWinCondition(wc)
+                            .forcedGameType(gameType)
+                            .build();
+                    return runStrategyChain(ctx);
+                }))
+                .toList();
 
-        if (result == null) {
-            log.error("All strategies failed for player: {}", playerTag);
-            return DeckResponse.builder()
+        // 4. Wait for all to complete
+        CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
+
+        // 5. Collect successful results
+        List<DeckResponse> results = futures.stream()
+                .map(f -> {
+                    try { return f.getNow(null); } catch (Exception e) { return null; }
+                })
+                .filter(Objects::nonNull)
+                .map(result -> buildResponse(result, supportCards))
+                .toList();
+
+        if (results.isEmpty()) {
+            log.error("All parallel deck generations failed for player: {}", playerTag);
+            return List.of(DeckResponse.builder()
                     .valid(false).strategy("N/A")
                     .tacticMessage("Failed to generate a valid deck, please try again.")
-                    .build();
+                    .build());
         }
 
-        // 4. Save user info
+        log.info("Generated {} decks for player: {}", results.size(), playerTag);
+
+        // 6. Save user info
         saveUserInfo(playerTag, playerResponse);
 
-        // 5. Build response
-        return buildResponse(result, supportCards);
+        return results;
+    }
+
+    // ══════════════════════════════════════════════
+    //  Free Deck Generation (SSE Streaming)
+    // ══════════════════════════════════════════════
+
+    /**
+     * Streams deck results via SSE. Each deck is sent as a "deck" event the moment
+     * its CompletableFuture completes, so the frontend can render progressively.
+     */
+    public void generateFreeDeckStream(String playerTag,
+                                        org.springframework.web.servlet.mvc.method.annotation.SseEmitter emitter) {
+        CompletableFuture.runAsync(() -> {
+            try {
+                // 1. Fetch & enrich
+                ClashApiResponse playerResponse = clashService.getPlayerCards(playerTag);
+                if (playerResponse == null || playerResponse.getCards() == null
+                        || playerResponse.getCards().isEmpty()) {
+                    emitter.send(org.springframework.web.servlet.mvc.method.annotation.SseEmitter.event()
+                            .name("error")
+                            .data("{\"message\":\"Player not found or no cards available.\"}"));
+                    emitter.complete();
+                    return;
+                }
+
+                List<Card> playerCards = enrichPlayerCards(playerResponse);
+                List<CardDto> supportCards = playerResponse.getSupportCards();
+                Integer bestTrophies = playerResponse.getBestTrophies();
+
+                // 2. Find top 3 WCs
+                List<String> topWCs = metaLlmStrategy.findTopWinConditions(playerCards, 3);
+                if (topWCs.isEmpty()) {
+                    topWCs = List.of((String) null);
+                }
+
+                // Send total count so frontend knows how many to expect
+                emitter.send(org.springframework.web.servlet.mvc.method.annotation.SseEmitter.event()
+                        .name("init")
+                        .data("{\"totalDecks\":" + topWCs.size() + "}"));
+
+                // 3. Fire parallel LLM calls
+                final List<Card> finalPlayerCards = playerCards;
+                final List<CardDto> finalSupportCards = supportCards;
+                java.util.concurrent.atomic.AtomicInteger completedCount = new java.util.concurrent.atomic.AtomicInteger(0);
+                int totalDecks = topWCs.size();
+
+                List<CompletableFuture<Void>> futures = topWCs.stream()
+                        .map(wc -> CompletableFuture.runAsync(() -> {
+                            try {
+                                String gameType = wc != null
+                                        ? com.deftgray.clashproxy.meta.WinConditionRegistry.WIN_CONDITIONS.get(wc) : null;
+                                DeckBuildContext ctx = DeckBuildContext.builder()
+                                        .playerCards(finalPlayerCards)
+                                        .bestTrophies(bestTrophies)
+                                        .supportCards(finalSupportCards)
+                                        .playerTag(playerTag)
+                                        .forcedWinCondition(wc)
+                                        .forcedGameType(gameType)
+                                        .build();
+
+                                DeckBuildResult result = runStrategyChain(ctx);
+                                int done = completedCount.incrementAndGet();
+
+                                if (result != null) {
+                                    DeckResponse response = buildResponse(result, finalSupportCards);
+                                    synchronized (emitter) {
+                                        emitter.send(org.springframework.web.servlet.mvc.method.annotation.SseEmitter.event()
+                                                .name("deck")
+                                                .data(new com.fasterxml.jackson.databind.ObjectMapper()
+                                                        .writeValueAsString(response)));
+                                    }
+                                    log.info("[SSE] Sent deck {}/{} for WC: {}", done, totalDecks, wc);
+                                } else {
+                                    log.warn("[SSE] Deck generation failed for WC: {}", wc);
+                                }
+                            } catch (Exception e) {
+                                log.error("[SSE] Error generating deck for WC: {}", wc, e);
+                            }
+                        }))
+                        .toList();
+
+                // 4. Wait for all to complete, then send "done" event
+                CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
+
+                emitter.send(org.springframework.web.servlet.mvc.method.annotation.SseEmitter.event()
+                        .name("done")
+                        .data("{\"totalSent\":" + completedCount.get() + "}"));
+                emitter.complete();
+
+                // Save user info
+                saveUserInfo(playerTag, playerResponse);
+                log.info("[SSE] Stream complete for player: {}", playerTag);
+
+            } catch (Exception e) {
+                log.error("[SSE] Stream error for player: {}", playerTag, e);
+                try {
+                    emitter.send(org.springframework.web.servlet.mvc.method.annotation.SseEmitter.event()
+                            .name("error")
+                            .data("{\"message\":\"Server error during deck generation.\"}"));
+                } catch (Exception ignored) {}
+                emitter.completeWithError(e);
+            }
+        });
     }
 
     // ══════════════════════════════════════════════
@@ -251,6 +388,7 @@ public class DeckService {
                 .towerTroopId(towerTroopId)
                 .towerTroopName(towerTroopName)
                 .towerTroopImageUrl(towerTroopImageUrl)
+                .winCondition(result.getWinCondition())
                 .build();
     }
 

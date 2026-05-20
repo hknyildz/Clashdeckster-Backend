@@ -23,6 +23,9 @@ public class LlmDeckSuggestion {
     @JsonProperty("selected_tower_troop")
     private String selectedTowerTroop;
 
+    @JsonProperty("reasoning_steps")
+    private List<String> reasoningSteps;
+
     @Data
     @NoArgsConstructor
     @JsonIgnoreProperties(ignoreUnknown = true)

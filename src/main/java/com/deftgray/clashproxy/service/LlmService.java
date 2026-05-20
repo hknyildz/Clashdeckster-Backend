@@ -15,6 +15,7 @@ import org.springframework.web.client.RestTemplate;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 @Service
@@ -23,7 +24,8 @@ import java.util.stream.Collectors;
 public class LlmService {
 
     private final RestTemplate restTemplate = new RestTemplate();
-    private final ObjectMapper objectMapper = new ObjectMapper();
+    private final ObjectMapper objectMapper = new ObjectMapper()
+            .enable(com.fasterxml.jackson.core.JsonParser.Feature.ALLOW_TRAILING_COMMA);
 
     @org.springframework.beans.factory.annotation.Value("${openrouter.url}")
     private String openRouterUrl;
@@ -34,20 +36,33 @@ public class LlmService {
     @org.springframework.beans.factory.annotation.Value("${openrouter.model}")
     private String modelName;
 
-    public LlmDeckSuggestion generateDeckRecommendation(List<SimplifiedCard> cards, Integer bestTrophies, List<CardDto> supportCards) {
+    // ══════════════════════════════════════════════
+    //  Public API
+    // ══════════════════════════════════════════════
+
+    public LlmDeckSuggestion generateDeckRecommendation(List<SimplifiedCard> cards,
+                                                         Integer bestTrophies,
+                                                         List<CardDto> supportCards,
+                                                         String metaContext,
+                                                         List<String> previousErrors,
+                                                         String forcedWinCondition,
+                                                         String forcedGameType,
+                                                         Set<String> mandatoryCombos,
+                                                         Map<String, Double> strongAssociations) {
         if (apiKey == null || apiKey.isEmpty()) {
             apiKey = " ";
             log.warn("Using hardcoded API key (NOT RECOMMENDED for production)");
         }
 
-        String prompt = createPrompt(cards, supportCards);
+        String prompt = createPrompt(cards, supportCards, previousErrors,
+                forcedWinCondition, forcedGameType, mandatoryCombos, strongAssociations);
         log.debug("Sending prompt to LLM: {}", prompt);
 
         HttpHeaders headers = new HttpHeaders();
         headers.setBearerAuth(apiKey);
         headers.setContentType(MediaType.APPLICATION_JSON);
 
-        String systemContent = getSystemPromptBase(bestTrophies, false, null, supportCards);
+        String systemContent = getSystemPromptBase(bestTrophies, false, null, supportCards, metaContext);
 
         Map<String, Object> body = Map.of(
                 "model", modelName,
@@ -67,7 +82,53 @@ public class LlmService {
         }
     }
 
-    private String createPrompt(List<SimplifiedCard> cards, List<CardDto> supportCards) {
+    public LlmDeckSuggestion generateDeckCompletion(List<SimplifiedCard> collection,
+                                                     List<String> currentDeckNames,
+                                                     String playStyle,
+                                                     Integer bestTrophies,
+                                                     List<CardDto> supportCards,
+                                                     String metaContext,
+                                                     List<String> previousErrors) {
+        if (apiKey == null || apiKey.isEmpty()) {
+            apiKey = " ";
+            log.warn("Using hardcoded API key (NOT RECOMMENDED for production)");
+        }
+
+        String prompt = createCompletionPrompt(collection, currentDeckNames, playStyle, supportCards, previousErrors);
+        log.debug("Sending completion prompt to LLM: {}", prompt);
+
+        HttpHeaders headers = new HttpHeaders();
+        headers.setBearerAuth(apiKey);
+        headers.setContentType(MediaType.APPLICATION_JSON);
+
+        String systemContent = getSystemPromptBase(bestTrophies, true, playStyle, supportCards, metaContext);
+
+        Map<String, Object> body = Map.of(
+                "model", modelName,
+                "messages", List.of(
+                        Map.of("role", "system", "content", systemContent),
+                        Map.of("role", "user", "content", prompt)));
+
+        HttpEntity<Map<String, Object>> entity = new HttpEntity<>(body, headers);
+
+        try {
+            String response = restTemplate.postForObject(openRouterUrl, entity, String.class);
+            log.info("Received response from LLM: {}", response != null ? response.replaceAll("\\n", "").replaceAll("\\s+", " ").trim() : "null");
+            return parseResponse(response);
+        } catch (Exception e) {
+            log.error("Error calling OpenRouter API", e);
+            return null;
+        }
+    }
+
+    // ══════════════════════════════════════════════
+    //  Prompt Builders
+    // ══════════════════════════════════════════════
+
+    private String createPrompt(List<SimplifiedCard> cards, List<CardDto> supportCards,
+                                 List<String> previousErrors, String forcedWinCondition,
+                                 String forcedGameType, Set<String> mandatoryCombos,
+                                 Map<String, Double> strongAssociations) {
         String cardList = cards.stream()
                 .sorted((c1, c2) -> Integer.compare(c2.getLevel() != null ? c2.getLevel() : 0,
                         c1.getLevel() != null ? c1.getLevel() : 0))
@@ -77,50 +138,76 @@ public class LlmService {
 
         String towerInfo = buildTowerTroopInfo(supportCards);
 
-        return "Here is my collection of cards, sorted by level (highest first):\n" + cardList
-                + towerInfo
-                + "\n\nPick 8 cards for a balanced, competitive deck. \n"
-                + "CRITICAL REQUIREMENT - BALANCE SYNERGY AND LEVELS:\n"
-                + "1. DECK SYNERGY IS PARAMOUNT: The deck must have a clear win condition, good defense, and spell support. Do not blindly pick all high-level cards if they ruin the synergy.\n"
-                + "2. MAXIMIZE LEVELS WITHIN SYNERGY: Whenever you have multiple viable cards for a slot that fit the deck's archetype, YOU MUST select the one with the highest level (16, 15, 14, 13). Avoid level 9-10 cards if a level 14,15,16 viable alternative exists.";
-    }
+        StringBuilder sb = new StringBuilder();
+        sb.append("=== PLAYER COLLECTION (sorted by level, highest first) ===\n");
+        sb.append(cardList);
+        sb.append(towerInfo);
 
-    public LlmDeckSuggestion generateDeckCompletion(List<SimplifiedCard> collection,
-            List<String> currentDeckNames, String playStyle, Integer bestTrophies, List<CardDto> supportCards) {
-        if (apiKey == null || apiKey.isEmpty()) {
-            apiKey = " ";
-            log.warn("Using hardcoded API key (NOT RECOMMENDED for production)");
+        // ─── BUILD INSTRUCTIONS ───
+        sb.append("\n\n=== BUILD INSTRUCTIONS ===\n");
+        sb.append("Follow the PRIORITY ORDER from the system prompt exactly.\n\n");
+
+        // Priority 1: Primary Anchor
+        if (forcedWinCondition != null && !forcedWinCondition.isEmpty()) {
+            sb.append("PRIORITY 1 — PRIMARY ANCHOR: '").append(forcedWinCondition).append("'");
+            if (forcedGameType != null && !forcedGameType.isEmpty()) {
+                sb.append(" (Archetype: ").append(forcedGameType).append(")");
+            }
+            sb.append("\nThis card MUST be in the deck. Build everything around it.\n");
+            sb.append("The 'strategy' field in your JSON MUST be '")
+              .append(forcedGameType != null ? forcedGameType : "Hybrid").append("'.\n\n");
         }
 
-        String prompt = createCompletionPrompt(collection, currentDeckNames, playStyle, supportCards);
-        log.debug("Sending completion prompt to LLM: {}", prompt);
-
-        HttpHeaders headers = new HttpHeaders();
-        headers.setBearerAuth(apiKey);
-        headers.setContentType(MediaType.APPLICATION_JSON);
-
-        String systemContent = getSystemPromptBase(bestTrophies, true, playStyle, supportCards);
-
-        Map<String, Object> body = Map.of(
-                "model", modelName,
-                "messages", List.of(
-                        Map.of("role", "system", "content", systemContent),
-                        Map.of("role", "user", "content", prompt)));
-
-        HttpEntity<Map<String, Object>> entity = new HttpEntity<>(body, headers);
-
-        try {
-            String response = restTemplate.postForObject(openRouterUrl, entity, String.class);
-            log.info("Received response from LLM: {}", response != null ? response.replaceAll("\\n", "").replaceAll("\\s+", " ").trim() : "null");
-            return parseResponse(response);
-        } catch (Exception e) {
-            log.error("Error calling OpenRouter API", e);
-            return null;
+        // Priority 2: Mandatory Combos
+        if (mandatoryCombos != null && !mandatoryCombos.isEmpty()) {
+            sb.append("PRIORITY 2 — MANDATORY COMBOS (≥70% co-occurrence, MUST INCLUDE):\n");
+            for (String combo : mandatoryCombos) {
+                sb.append("  ★ ").append(combo).append("\n");
+            }
+            sb.append("These cards MUST be in the deck even if their level is low.\n\n");
         }
+
+        // Recommended synergies
+        if (strongAssociations != null && !strongAssociations.isEmpty()) {
+            sb.append("RECOMMENDED SYNERGIES (40-69% co-occurrence, prefer if possible):\n");
+            strongAssociations.entrySet().stream().limit(5).forEach(e ->
+                    sb.append("  • ").append(e.getKey())
+                      .append(" (").append(String.format("%.0f%%", e.getValue())).append(")\n"));
+            sb.append("\n");
+        }
+
+        // Priority 3: Reference Deck Adherence
+        sb.append("PRIORITY 3 — REFERENCE DECK ADHERENCE:\n");
+        sb.append("  When filling remaining slots, you MUST strictly prioritize cards that appear in the Reference Meta Decks provided above.\n");
+        sb.append("  Do NOT pick random high-level cards to fill a role if a card from the reference decks fits that role.\n\n");
+
+        // Priority 4: Role Balance
+        sb.append("PRIORITY 4 — ROLE BALANCE CHECKLIST (MAX 2 SPELLS TOTAL):\n");
+        sb.append("  □ At least 1 Small Spell (The Log, Zap, Arrows, Snowball, Barbarian Barrel)\n");
+        sb.append("  □ At least 1 Big Spell (Fireball, Poison, Rocket, Lightning, Earthquake)\n");
+        sb.append("  □ CRITICAL: NEVER include more than 2 spells in total. If you have a small and big spell, do not add a third.\n");
+        sb.append("  □ At least 1 Air Defense card (a troop or building that can target air units)\n\n");
+
+        // Priority 5: Level Optimization
+        sb.append("PRIORITY 5 — LEVEL OPTIMIZATION:\n");
+        sb.append("  Only after checking reference decks and roles, pick the HIGHEST LEVEL cards that fit the archetype.\n");
+        sb.append("  ONLY use cards from the collection above. Do NOT invent cards.\n\n");
+
+        // Previous errors
+        if (previousErrors != null && !previousErrors.isEmpty()) {
+            sb.append("⚠️ YOUR PREVIOUS ATTEMPT HAD ERRORS. FIX THESE:\n");
+            for (String err : previousErrors) {
+                sb.append("- ").append(err).append("\n");
+            }
+            sb.append("Generate a corrected deck that avoids ALL errors above.\n");
+        }
+
+        return sb.toString();
     }
 
     private String createCompletionPrompt(List<SimplifiedCard> collection, List<String> currentDeckNames,
-            String playStyle, List<CardDto> supportCards) {
+                                           String playStyle, List<CardDto> supportCards,
+                                           List<String> previousErrors) {
         String cardList = collection.stream()
                 .sorted((c1, c2) -> Integer.compare(c2.getLevel() != null ? c2.getLevel() : 0,
                         c1.getLevel() != null ? c1.getLevel() : 0))
@@ -131,82 +218,140 @@ public class LlmService {
         String alreadySelected = String.join(", ", currentDeckNames);
         String towerInfo = buildTowerTroopInfo(supportCards);
 
-        return "Here is my collection of cards, sorted by level (highest first):\n" + cardList
-                + towerInfo
-                + "\n\nI want to build a '" + playStyle + "' deck."
-                + "\nI have ALREADY selected these cards: " + alreadySelected
-                + "\nPlease pick the remaining cards from my collection to form a complete, competitive 8-card deck. Ensure the final deck includes the cards I selected.\n"
-                + "CRITICAL REQUIREMENT - BALANCE SYNERGY AND LEVELS:\n"
-                + "1. SYNERGY FIRST: Make sure the final deck has excellent synergy for a " + playStyle
-                + " archetype.\n"
-                + "2. LEVELS SECOND: When deciding between two cards that both fit the synergy, YOU MUST pick the one with the higher level (13, 14, 15). Avoid adding low-level cards if a high-level alternative exists that preserves the deck's power.";
+        StringBuilder sb = new StringBuilder();
+        sb.append("=== PLAYER COLLECTION (sorted by level, highest first) ===\n");
+        sb.append(cardList);
+        sb.append(towerInfo);
+        sb.append("\n\n=== BUILD INSTRUCTIONS ===\n");
+        sb.append("I want to build a '").append(playStyle).append("' deck.\n");
+        sb.append("I have ALREADY selected these cards: ").append(alreadySelected).append("\n");
+        sb.append("Complete the deck to exactly 8 cards from my collection.\n\n");
+        sb.append("PRIORITY ORDER:\n");
+        sb.append("1. SYNERGY FIRST: Ensure excellent synergy for the ").append(playStyle).append(" archetype.\n");
+        sb.append("2. META COMBOS: Include core combo partners from the META DATA if provided.\n");
+        sb.append("3. ROLE BALANCE: At least 1 Small Spell, 1 Big Spell, 1 Air Defense.\n");
+        sb.append("4. LEVELS SECOND: For flex slots, pick the highest-level cards that fit.\n");
+        sb.append("5. ONLY use cards from the collection above.\n");
+
+        if (previousErrors != null && !previousErrors.isEmpty()) {
+            sb.append("\n⚠️ YOUR PREVIOUS ATTEMPT HAD ERRORS. FIX THESE:\n");
+            for (String err : previousErrors) {
+                sb.append("- ").append(err).append("\n");
+            }
+            sb.append("Generate a corrected deck that avoids ALL errors above.\n");
+        }
+
+        return sb.toString();
     }
 
-    private String getSystemPromptBase(Integer bestTrophies, boolean isCompletion, String playStyle, List<CardDto> supportCards) {
+    // ══════════════════════════════════════════════
+    //  System Prompt
+    // ══════════════════════════════════════════════
+
+    private String getSystemPromptBase(Integer bestTrophies, boolean isCompletion, String playStyle,
+                                        List<CardDto> supportCards, String metaContext) {
         int trophies = bestTrophies != null ? bestTrophies : 0;
         int evoLimit = trophies < 3000 ? 1 : 2;
         int heroLimit = trophies < 3000 ? 1 : 2;
         int totalLimit = trophies < 3000 ? 2 : 3;
 
-        String constraints = "- MAXIMUM Evolutions Allowed: " + evoLimit + "\n" +
-                "- MAXIMUM Heroes Allowed: " + heroLimit + "\n" +
-                "- TOTAL SPECIAL CARDS (Heroes + Evolutions combined): " + totalLimit + "\n";
+        StringBuilder system = new StringBuilder();
 
-        String towerConstraint = "";
+        // ─── SECTION A: IDENTITY ───
+        system.append("You are an elite Clash Royale Deck Building AI.\n\n");
+
+        // ─── SECTION B: HARD CONSTRAINTS (NON-NEGOTIABLE) ───
+        system.append("=== HARD CONSTRAINTS (VIOLATION = INSTANT REJECTION) ===\n\n");
+
+        // B1: Slot Mechanics
+        system.append("B1. SLOT MECHANICS (card ordering in the 'cards' array):\n");
+        system.append("  - Index 0: EVOLUTION SLOT — If you pick an evolved card, it MUST be here. Otherwise normal card.\n");
+        system.append("  - Index 1: HERO SLOT — If you pick a hero card, it MUST be here. Otherwise normal card.\n");
+        system.append("  - Index 2: FLEX SPECIAL SLOT — Can hold a 2nd evolution, 2nd hero, or normal card.\n");
+        system.append("  - Index 3-7: NORMAL CARDS ONLY — NEVER place an evolution or hero here.\n");
+        system.append("  If you have 0 evolutions, Index 0 is a normal card. If 0 heroes, Index 1 is normal.\n\n");
+
+        // B2: Special Card Limits
+        system.append("B2. SPECIAL CARD LIMITS:\n");
+        system.append("  - Maximum Evolutions: ").append(evoLimit).append("\n");
+        system.append("  - Maximum Heroes: ").append(heroLimit).append("\n");
+        system.append("  - Maximum Total (Evos + Heroes combined): ").append(totalLimit).append("\n");
+        system.append("  - Do NOT force evos/heroes if they break synergy. 0 evos and 0 heroes is valid.\n");
+        system.append("  - ONLY evolve cards where Evo=true in collection. ONLY use hero where Hero=true.\n\n");
+
+        // B3: Tower Troop
         if (supportCards != null && !supportCards.isEmpty()) {
-            // Find the highest level tower troop to set the level-gap rule
             int maxTowerLevel = supportCards.stream()
                     .mapToInt(sc -> sc.getLevel() != null ? sc.getLevel() : 1)
                     .max().orElse(1);
-            towerConstraint = "- TOWER TROOP: You MUST recommend exactly one tower troop from the player's available tower troops. "
-                    + "The player's highest tower troop level is " + maxTowerLevel + ". "
-                    + "Do NOT recommend a tower troop whose level is more than 2 levels lower than the highest level tower troop. "
-                    + "Choose the tower troop that best synergizes with the deck while respecting this level constraint.\n";
+            system.append("B3. TOWER TROOP:\n");
+            system.append("  - Pick exactly one tower troop from the player's available list.\n");
+            system.append("  - Highest tower troop level: ").append(maxTowerLevel).append(". ");
+            system.append("Do NOT pick one more than 2 levels lower.\n\n");
         }
 
-        String coreInstructions = "1. STEP 1: Decide which cards to evolve. List their names in the 'selected_evolutions' array. Its length MUST NOT exceed the Maximum Evolutions Allowed.\n"
-                + "2. STEP 2: Decide your heroes. List their names in the 'selected_heroes' array. Its length MUST NOT exceed the Maximum Heroes Allowed.\n"
-                + "3. STEP 3: Verify that the sum of lengths of both arrays does NOT exceed the TOTAL SPECIAL CARDS limit.\n"
-                + "4. STEP 4: Build exactly 8 cards. ONLY set 'isEvolved': true if the card is in 'selected_evolutions'.\n"
-                + "5. ONLY evolve cards if the player collection indicates they have it unlocked (Evo: true or Level covers it).\n"
-                + "6. STEP 5: Pick a tower troop from the available tower troops and put its exact name in 'selected_tower_troop'.\n";
+        // B4: Collection Constraint
+        system.append("B4. COLLECTION ONLY: Every card MUST exist in the player's collection. ");
+        system.append("Do NOT invent cards.\n\n");
 
-        String jsonFormat = "Return ONLY a raw JSON object string with no markdown (no ```json). Format:\n"
-                + "{\n"
-                + "  \"selected_evolutions\": [\"CardName1\"],\n"
-                + "  \"selected_heroes\": [],\n"
-                + "  \"selected_tower_troop\": \"Tower Princess\",\n"
-                + "  \"cards\": [ {\"name\": \"...\", \"isEvolved\": true/false, \"isHero\": true/false, \"level\": 14} ],\n"
-                + "  \"strategy\": \"Beatdown | Control | Cycle | Bait | Siege | Bridge Spam | Split Lane | Hybrid\",\n"
-                + "  \"tactic\": \"Explanation...\"\n"
-                + "}";
+        // ─── SECTION C: BUILD PRIORITY (FOLLOW THIS ORDER) ───
+        system.append("=== BUILD PRIORITY (FOLLOW THIS EXACT ORDER) ===\n\n");
+        system.append("Priority 1: PRIMARY ANCHOR — The forced win condition (if specified) MUST be included.\n");
+        system.append("Priority 2: MANDATORY COMBOS — Cards with ≥70% co-occurrence with the anchor. ");
+        system.append("Include them EVEN IF their level is low (e.g. Level 9). ");
+        system.append("Synergy > Levels.\n");
+        system.append("Priority 3: ROLE BALANCE — At minimum: 1 Small Spell, 1 Big Spell, 1 Air Defense.\n");
+        system.append("Priority 4: LEVEL OPTIMIZATION — Fill remaining slots with HIGHEST LEVEL cards ");
+        system.append("that fit the archetype. Only optimize levels AFTER priorities 1-3 are satisfied.\n\n");
 
+        // ─── SECTION D: CHAIN OF THOUGHT ───
+        system.append("=== CHAIN OF THOUGHT ===\n");
+        system.append("Before outputting JSON, reason through these steps and document in 'reasoning_steps':\n");
+        system.append("  Step 1: Place the Primary Anchor card.\n");
+        system.append("  Step 2: Add all Mandatory Combo partners (explain why each is included, mention co-occurrence %).\n");
+        system.append("  Step 3: Check role balance — do you have a small spell, big spell, air defense?\n");
+        system.append("  Step 4: Fill remaining slots with highest-level cards that fit the archetype.\n");
+        system.append("  Step 5: Assign slot positions — evos at Index 0, heroes at Index 1, flex at Index 2, rest at 3-7.\n");
+        system.append("  Step 6: Self-check — re-read the HARD CONSTRAINTS and verify you don't violate any.\n\n");
+
+        // ─── SECTION E: OUTPUT FORMAT ───
+        system.append("=== OUTPUT FORMAT ===\n");
+        system.append("Return ONLY a raw JSON object (no markdown, no ```json). Exact schema:\n");
+        system.append("{\n");
+        system.append("  \"reasoning_steps\": [\n");
+        system.append("    \"Step 1: Placed Miner as Primary Anchor\",\n");
+        system.append("    \"Step 2: Added Balloon (90% combo) despite Level 11 — synergy > levels\",\n");
+        system.append("    \"Step 3: Added The Log (small spell) and Fireball (big spell). Musketeer for air defense.\",\n");
+        system.append("    \"Step 4: Filled flex slots: Valkyrie(L14), Ice Golem(L13)\",\n");
+        system.append("    \"Step 5: Skeletons(Evo) at Index 0, normals at 1-7\",\n");
+        system.append("    \"Step 6: Self-check passed — 2 spells, air defense present, 1 evo at Index 0\"\n");
+        system.append("  ],\n");
+        system.append("  \"selected_evolutions\": [\"CardName\"],\n");
+        system.append("  \"selected_heroes\": [],\n");
+        system.append("  \"selected_tower_troop\": \"Tower Princess\",\n");
+        system.append("  \"cards\": [\n");
+        system.append("    {\"name\": \"...\", \"isEvolved\": true, \"isHero\": false, \"level\": 14},\n");
+        system.append("    ... (exactly 8 cards, ordered by slot rules above)\n");
+        system.append("  ],\n");
+        system.append("  \"strategy\": \"Beatdown | Cycle/Control | Bait/Special | Siege | Bridge Spam | Hybrid\",\n");
+        system.append("  \"tactic\": \"Detailed explanation: win condition, offense plan, defense plan, spell usage, key synergies.\"\n");
+        system.append("}\n");
+
+        // ─── Completion-specific additions ───
         if (isCompletion) {
-            constraints += "These limits apply to the ENTIRE FINAL DECK, including cards already selected.\n";
-            return "You are an elite Clash Royale Deck Building AI.\n\n"
-                    + "YOUR TASK:\n"
-                    + "Complete the deck to precisely 8 cards using the player's collection.\n"
-                    + "Respect this playstyle: " + playStyle + ".\n\n"
-                    + "ABSOLUTE STRICT CONSTRAINTS:\n"
-                    + constraints
-                    + towerConstraint
-                    + "\nINSTRUCTIONS:\n"
-                    + coreInstructions
-                    + "\nOUTPUT FORMAT:\n"
-                    + jsonFormat;
-        } else {
-            return "You are an elite Clash Royale Deck Building AI.\n\n"
-                    + "YOUR TASK:\n"
-                    + "Select exactly 8 cards from the provided collection to form a competitive deck.\n\n"
-                    + "ABSOLUTE STRICT CONSTRAINTS:\n"
-                    + constraints
-                    + towerConstraint
-                    + "\nINSTRUCTIONS:\n"
-                    + coreInstructions
-                    + "\nOUTPUT FORMAT:\n"
-                    + jsonFormat;
+            system.append("\nADDITIONAL: Complete the deck to 8 cards. Include all cards the user already selected. ");
+            system.append("Respect playstyle: ").append(playStyle).append(".\n");
         }
+
+        // ─── META INTELLIGENCE ───
+        system.append(buildMetaIntelligenceBlock(metaContext));
+
+        return system.toString();
     }
+
+    // ══════════════════════════════════════════════
+    //  Response Parsing
+    // ══════════════════════════════════════════════
 
     private LlmDeckSuggestion parseResponse(String jsonResponse) {
         try {
@@ -252,6 +397,10 @@ public class LlmService {
         }
     }
 
+    // ══════════════════════════════════════════════
+    //  Helpers
+    // ══════════════════════════════════════════════
+
     private String buildTowerTroopInfo(List<CardDto> supportCards) {
         if (supportCards == null || supportCards.isEmpty()) {
             return "";
@@ -264,5 +413,20 @@ public class LlmService {
                         sc.getRarity() != null ? sc.getRarity() : "unknown"))
                 .collect(Collectors.joining("\n"));
         return "\n\nTower Troops available (pick one for 'selected_tower_troop'):\n" + towerList;
+    }
+
+    /**
+     * Wraps meta-context (reference decks + co-occurrence) with LLM instructions.
+     * Returns empty string if no meta context is available.
+     */
+    private String buildMetaIntelligenceBlock(String metaContext) {
+        if (metaContext == null || metaContext.isBlank()) {
+            return "";
+        }
+        return "\n\n=== META INTELLIGENCE (PROVEN DECKS FROM TOP PLAYERS) ===" + metaContext
+                + "\nUSE these reference decks as your PRIMARY guide for Priority 2 (Mandatory Combos). "
+                + "Adapt the closest matching meta deck to the player's collection. "
+                + "Replace cards the player doesn't own with the highest-level "
+                + "alternatives that preserve synergy and combo integrity.";
     }
 }

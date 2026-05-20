@@ -176,15 +176,21 @@ public class LlmService {
             sb.append("\n");
         }
 
-        // Priority 3: Role Balance
-        sb.append("PRIORITY 3 — ROLE BALANCE CHECKLIST:\n");
+        // Priority 3: Reference Deck Adherence
+        sb.append("PRIORITY 3 — REFERENCE DECK ADHERENCE:\n");
+        sb.append("  When filling remaining slots, you MUST strictly prioritize cards that appear in the Reference Meta Decks provided above.\n");
+        sb.append("  Do NOT pick random high-level cards to fill a role if a card from the reference decks fits that role.\n\n");
+
+        // Priority 4: Role Balance
+        sb.append("PRIORITY 4 — ROLE BALANCE CHECKLIST (MAX 2 SPELLS TOTAL):\n");
         sb.append("  □ At least 1 Small Spell (The Log, Zap, Arrows, Snowball, Barbarian Barrel)\n");
         sb.append("  □ At least 1 Big Spell (Fireball, Poison, Rocket, Lightning, Earthquake)\n");
+        sb.append("  □ CRITICAL: NEVER include more than 2 spells in total. If you have a small and big spell, do not add a third.\n");
         sb.append("  □ At least 1 Air Defense card (a troop or building that can target air units)\n\n");
 
-        // Priority 4: Level Optimization
-        sb.append("PRIORITY 4 — LEVEL OPTIMIZATION:\n");
-        sb.append("  Fill remaining flex slots with the HIGHEST LEVEL cards that fit the archetype.\n");
+        // Priority 5: Level Optimization
+        sb.append("PRIORITY 5 — LEVEL OPTIMIZATION:\n");
+        sb.append("  Only after checking reference decks and roles, pick the HIGHEST LEVEL cards that fit the archetype.\n");
         sb.append("  ONLY use cards from the collection above. Do NOT invent cards.\n\n");
 
         // Previous errors

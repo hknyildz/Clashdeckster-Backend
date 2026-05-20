@@ -159,5 +159,13 @@ public class Controller {
             return Map.of("status", "error", "message", e.getMessage());
         }
     }
+
+    @GetMapping("/players/top")
+    public List<com.deftgray.clashproxy.dto.RankingResponse.RankedPlayer> getTopPlayers(@RequestParam(defaultValue = "100") int limit) {
+        log.info("=== Top Players Request === limit: {}", limit);
+        List<com.deftgray.clashproxy.dto.RankingResponse.RankedPlayer> response = clashService.getTopPlayers(limit);
+        log.info("=== Top Players Response === size: {}", response.size());
+        return response;
+    }
 }
 

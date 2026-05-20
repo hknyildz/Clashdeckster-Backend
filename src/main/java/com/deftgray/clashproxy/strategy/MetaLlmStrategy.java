@@ -209,7 +209,9 @@ public class MetaLlmStrategy implements DeckBuildStrategy {
             // ─── Success! ───
             log.info("[{}] ═══ BUILD SUCCESS ═══ strategy={}, deck=[{}]",
                     logTag, suggestion.getStrategy(),
-                    deck.stream().map(c -> c.getName() + "(L" + c.getLevel() + ")")
+                    deck.stream().map(c -> c.getName() + "(L" + c.getLevel() + ")" + 
+                                    (Boolean.TRUE.equals(c.getEvolved()) ? " (Evo)" : "") + 
+                                    (Boolean.TRUE.equals(c.getIsHero()) ? " (Hero)" : ""))
                             .collect(Collectors.joining(", ")));
 
             return DeckBuildResult.builder()

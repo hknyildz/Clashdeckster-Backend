@@ -9,9 +9,11 @@ import com.deftgray.clashproxy.model.Card;
 import com.deftgray.clashproxy.repository.MetaDeckRepository;
 import com.deftgray.clashproxy.service.ClashService;
 import com.deftgray.clashproxy.service.DeckService;
+import jakarta.servlet.http.HttpServletResponse;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import java.util.List;
 import java.util.Map;
@@ -66,10 +68,16 @@ public class Controller {
      * Events: "deck" (individual deck), "done" (all complete), "error" (failure).
      */
     @GetMapping(value = "/freeDeck/{tag}/stream", produces = org.springframework.http.MediaType.TEXT_EVENT_STREAM_VALUE)
-    public org.springframework.web.servlet.mvc.method.annotation.SseEmitter streamFreeDeck(@PathVariable String tag) {
+    public SseEmitter streamFreeDeck(
+            @PathVariable String tag, 
+            HttpServletResponse response) {
+        
+        // Explicitly tell Nginx and other proxies NOT to buffer this response
+        response.setHeader("X-Accel-Buffering", "no");
+        response.setHeader("Cache-Control", "no-cache");
+        
         log.info("=== Free Deck Stream Request === tag: {}", tag);
-        org.springframework.web.servlet.mvc.method.annotation.SseEmitter emitter =
-                new org.springframework.web.servlet.mvc.method.annotation.SseEmitter(120_000L); // 2 min timeout
+        SseEmitter emitter = new SseEmitter(120_000L); // 2 min timeout
         deckService.generateFreeDeckStream(tag, emitter);
         return emitter;
     }

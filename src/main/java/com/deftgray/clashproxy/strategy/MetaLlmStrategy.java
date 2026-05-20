@@ -41,6 +41,18 @@ public class MetaLlmStrategy implements DeckBuildStrategy {
     private final MetaSynergyService metaSynergyService;
 
     private static final int MAX_RETRIES = 3;
+    private static final int MAX_SPELLS = 2;
+
+    // Comprehensive spell list — API type field is null so we maintain this manually.
+    // Cards like Graveyard, Goblin Barrel, Mirror are win conditions / support, NOT counted as "spells" here.
+    private static final Set<String> SPELL_CARDS = Set.of(
+            // Small Spells
+            "The Log", "Zap", "Arrows", "Giant Snowball", "Royal Delivery",
+            // Big Spells
+            "Fireball", "Poison", "Rocket", "Lightning", "Earthquake", "Tornado", "Freeze",
+            // Rage is technically a spell
+            "Rage"
+    );
 
     // ─── Strategy Pattern interface ───
 
@@ -205,6 +217,9 @@ public class MetaLlmStrategy implements DeckBuildStrategy {
                 previousErrors.add(err);
                 continue;
             }
+
+            // ─── Step 6: Promote eligible cards to special slots ───
+            promoteSpecialForms(deck, cardMap, context.getBestTrophies(), logTag);
 
             // ─── Success! ───
             log.info("[{}] ═══ BUILD SUCCESS ═══ strategy={}, deck=[{}]",
@@ -436,7 +451,16 @@ public class MetaLlmStrategy implements DeckBuildStrategy {
         List<String> intendedHeroes = suggestion.getSelectedHeroes() != null
                 ? suggestion.getSelectedHeroes() : List.of();
 
-        for (LlmDeckSuggestion.LlmCardSuggestion cs : suggestion.getCards()) {
+        // Truncate to first 8 cards — LLM sometimes returns 9-10 cards.
+        // The first 8 are always the intentional deck (ordered by slot rules),
+        // so we safely ignore overflow cards instead of wasting a retry.
+        List<LlmDeckSuggestion.LlmCardSuggestion> cardSuggestions = suggestion.getCards();
+        if (cardSuggestions.size() > 8) {
+            log.warn("[Validation] LLM returned {} cards, truncating to first 8", cardSuggestions.size());
+            cardSuggestions = cardSuggestions.subList(0, 8);
+        }
+
+        for (LlmDeckSuggestion.LlmCardSuggestion cs : cardSuggestions) {
             String cardName = cs.getName();
 
             // Check duplicate
@@ -532,6 +556,18 @@ public class MetaLlmStrategy implements DeckBuildStrategy {
                 }
             }
 
+            // ─── Spell Count Validation (max 2 spells) ───
+            List<String> spellsInDeck = deck.stream()
+                    .map(Card::getName)
+                    .filter(SPELL_CARDS::contains)
+                    .toList();
+            if (spellsInDeck.size() > MAX_SPELLS) {
+                validationErrors.add("SPELL VIOLATION: Deck contains " + spellsInDeck.size() +
+                        " spells " + spellsInDeck + " but maximum allowed is " + MAX_SPELLS +
+                        ". Remove " + (spellsInDeck.size() - MAX_SPELLS) + " spell(s) and replace with a troop or building. " +
+                        "Keep exactly 1 small spell and 1 big spell.");
+            }
+
             // ─── Mandatory Combo Validation ───
             if (mandatoryCombos != null && !mandatoryCombos.isEmpty()) {
                 for (String combo : mandatoryCombos) {
@@ -582,5 +618,165 @@ public class MetaLlmStrategy implements DeckBuildStrategy {
                 .isHero(Boolean.TRUE.equals(card.getIsHero()))
                 .elixirCost(card.getElixirCost())
                 .build();
+    }
+
+    // ══════════════════════════════════════════════
+    //  Step 6: Post-Processing — Promote to Special Slots
+    // ══════════════════════════════════════════════
+
+    /**
+     * After the LLM builds a valid 8-card deck, this method checks if any cards
+     * in normal slots (3-7) have unlocked Evo/Hero forms in the player's collection.
+     * If special slots (0=Evo, 1=Hero, 2=Flex) are occupied by normal cards,
+     * we swap in the eligible card and activate its special form.
+     *
+     * This is a "free power upgrade" — same 8 cards, same synergy, just better forms.
+     */
+    private void promoteSpecialForms(List<Card> deck, Map<String, Card> cardMap,
+                                      Integer bestTrophies, String logTag) {
+        if (deck.size() != 8) return;
+
+        int trophies = bestTrophies != null ? bestTrophies : 0;
+        int maxEvos = trophies < 3000 ? 1 : 2;
+        int maxHeroes = trophies < 3000 ? 1 : 2;
+        int maxTotal = trophies < 3000 ? 2 : 3;
+
+        // Count currently active evos and heroes
+        long activeEvos = deck.stream().filter(c -> Boolean.TRUE.equals(c.getEvolved())).count();
+        long activeHeroes = deck.stream().filter(c -> Boolean.TRUE.equals(c.getIsHero())).count();
+
+        // ─── Promote Evos to Index 0 ───
+        if (!Boolean.TRUE.equals(deck.get(0).getEvolved()) && activeEvos < maxEvos
+                && (activeEvos + activeHeroes) < maxTotal) {
+            // First: check if the card already at Index 0 has an evo form
+            Card atSlot0 = deck.get(0);
+            Card playerCard0 = cardMap.get(atSlot0.getName());
+            if (playerCard0 != null && Boolean.TRUE.equals(playerCard0.getEvolved())) {
+                atSlot0.setEvolved(true);
+                activeEvos++;
+                log.info("[{}] ⬆ Activated in-place Evo for '{}' at Index 0", logTag, atSlot0.getName());
+            } else {
+                // Search other positions for an evo candidate
+                Card bestEvo = null;
+                int bestEvoIdx = -1;
+                for (int i = 1; i < deck.size(); i++) {
+                    if (Boolean.TRUE.equals(deck.get(i).getIsHero())) continue;
+                    Card playerCard = cardMap.get(deck.get(i).getName());
+                    if (playerCard != null && Boolean.TRUE.equals(playerCard.getEvolved())
+                            && !Boolean.TRUE.equals(deck.get(i).getEvolved())) {
+                        if (bestEvo == null || (deck.get(i).getLevel() != null
+                                && deck.get(i).getLevel() > (bestEvo.getLevel() != null ? bestEvo.getLevel() : 0))) {
+                            bestEvo = deck.get(i);
+                            bestEvoIdx = i;
+                        }
+                    }
+                }
+                if (bestEvo != null) {
+                    Card displaced = deck.get(0);
+                    deck.set(0, bestEvo);
+                    deck.set(bestEvoIdx, displaced);
+                    bestEvo.setEvolved(true);
+                    activeEvos++;
+                    log.info("[{}] ⬆ Promoted '{}' to Evo slot (Index 0)", logTag, bestEvo.getName());
+                }
+            }
+        }
+
+        // ─── Promote Heroes to Index 1 ───
+        if (!Boolean.TRUE.equals(deck.get(1).getIsHero()) && activeHeroes < maxHeroes
+                && (activeEvos + activeHeroes) < maxTotal) {
+            // First: check if the card already at Index 1 has a hero form
+            Card atSlot1 = deck.get(1);
+            Card playerCard1 = cardMap.get(atSlot1.getName());
+            if (playerCard1 != null && Boolean.TRUE.equals(playerCard1.getIsHero())) {
+                atSlot1.setIsHero(true);
+                activeHeroes++;
+                log.info("[{}] ⬆ Activated in-place Hero for '{}' at Index 1", logTag, atSlot1.getName());
+            } else {
+                // Search positions 2-7 for a hero candidate
+                Card bestHero = null;
+                int bestHeroIdx = -1;
+                for (int i = 2; i < deck.size(); i++) {
+                    if (Boolean.TRUE.equals(deck.get(i).getEvolved())) continue;
+                    Card playerCard = cardMap.get(deck.get(i).getName());
+                    if (playerCard != null && Boolean.TRUE.equals(playerCard.getIsHero())
+                            && !Boolean.TRUE.equals(deck.get(i).getIsHero())) {
+                        if (bestHero == null || (deck.get(i).getLevel() != null
+                                && deck.get(i).getLevel() > (bestHero.getLevel() != null ? bestHero.getLevel() : 0))) {
+                            bestHero = deck.get(i);
+                            bestHeroIdx = i;
+                        }
+                    }
+                }
+                if (bestHero != null) {
+                    Card displaced = deck.get(1);
+                    deck.set(1, bestHero);
+                    deck.set(bestHeroIdx, displaced);
+                    bestHero.setIsHero(true);
+                    activeHeroes++;
+                    log.info("[{}] ⬆ Promoted '{}' to Hero slot (Index 1)", logTag, bestHero.getName());
+                }
+            }
+        }
+
+        // ─── Promote to Flex slot (Index 2) ───
+        if (!Boolean.TRUE.equals(deck.get(2).getEvolved()) && !Boolean.TRUE.equals(deck.get(2).getIsHero())
+                && (activeEvos + activeHeroes) < maxTotal) {
+            // First: check if the card already at Index 2 has an evo or hero form
+            Card atSlot2 = deck.get(2);
+            Card playerCard2 = cardMap.get(atSlot2.getName());
+            boolean activated = false;
+            if (playerCard2 != null) {
+                if (Boolean.TRUE.equals(playerCard2.getEvolved()) && activeEvos < maxEvos) {
+                    atSlot2.setEvolved(true);
+                    activeEvos++;
+                    activated = true;
+                    log.info("[{}] ⬆ Activated in-place Evo for '{}' at Flex slot (Index 2)", logTag, atSlot2.getName());
+                } else if (Boolean.TRUE.equals(playerCard2.getIsHero()) && activeHeroes < maxHeroes) {
+                    atSlot2.setIsHero(true);
+                    activeHeroes++;
+                    activated = true;
+                    log.info("[{}] ⬆ Activated in-place Hero for '{}' at Flex slot (Index 2)", logTag, atSlot2.getName());
+                }
+            }
+
+            if (!activated) {
+                // Search positions 3-7 for an evo or hero candidate
+                Card bestFlex = null;
+                int bestFlexIdx = -1;
+                boolean flexIsEvo = false;
+
+                for (int i = 3; i < deck.size(); i++) {
+                    if (Boolean.TRUE.equals(deck.get(i).getEvolved()) || Boolean.TRUE.equals(deck.get(i).getIsHero())) continue;
+                    Card playerCard = cardMap.get(deck.get(i).getName());
+                    if (playerCard == null) continue;
+
+                    if (Boolean.TRUE.equals(playerCard.getEvolved()) && activeEvos < maxEvos) {
+                        if (bestFlex == null || (deck.get(i).getLevel() != null
+                                && deck.get(i).getLevel() > (bestFlex.getLevel() != null ? bestFlex.getLevel() : 0))) {
+                            bestFlex = deck.get(i);
+                            bestFlexIdx = i;
+                            flexIsEvo = true;
+                        }
+                    } else if (Boolean.TRUE.equals(playerCard.getIsHero()) && activeHeroes < maxHeroes && bestFlex == null) {
+                        bestFlex = deck.get(i);
+                        bestFlexIdx = i;
+                        flexIsEvo = false;
+                    }
+                }
+                if (bestFlex != null) {
+                    Card displaced = deck.get(2);
+                    deck.set(2, bestFlex);
+                    deck.set(bestFlexIdx, displaced);
+                    if (flexIsEvo) {
+                        bestFlex.setEvolved(true);
+                        log.info("[{}] ⬆ Promoted '{}' to Flex Evo slot (Index 2)", logTag, bestFlex.getName());
+                    } else {
+                        bestFlex.setIsHero(true);
+                        log.info("[{}] ⬆ Promoted '{}' to Flex Hero slot (Index 2)", logTag, bestFlex.getName());
+                    }
+                }
+            }
+        }
     }
 }

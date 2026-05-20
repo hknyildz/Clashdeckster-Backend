@@ -183,9 +183,13 @@ public class LlmService {
 
         // Priority 4: Role Balance
         sb.append("PRIORITY 4 — ROLE BALANCE CHECKLIST (MAX 2 SPELLS TOTAL):\n");
-        sb.append("  □ At least 1 Small Spell (The Log, Zap, Arrows, Snowball, Barbarian Barrel)\n");
-        sb.append("  □ At least 1 Big Spell (Fireball, Poison, Rocket, Lightning, Earthquake)\n");
-        sb.append("  □ CRITICAL: NEVER include more than 2 spells in total. If you have a small and big spell, do not add a third.\n");
+        sb.append("  SPELL REFERENCE (these are ALL the spell cards — count them carefully):\n");
+        sb.append("    Small Spells: The Log, Zap, Arrows, Giant Snowball,  Royal Delivery\n");
+        sb.append("    Big Spells: Fireball, Poison, Rocket, Lightning, Earthquake, Tornado, Freeze, Rage\n");
+        sb.append("  □ Include exactly 1 Small Spell and exactly 1 Big Spell = 2 spells total.\n");
+        sb.append("  □ HARD LIMIT: NEVER include more than 2 spells. If you already have 2 spells, every other card MUST be a troop or building.\n");
+        sb.append("  □ Cards like Graveyard, Goblin Barrel, Mirror are NOT spells for this rule.\n");
+        sb.append("  □ Before finalizing, COUNT your spells. If count > 2, remove the weakest spell and add a troop/building.\n");
         sb.append("  □ At least 1 Air Defense card (a troop or building that can target air units)\n\n");
 
         // Priority 5: Level Optimization
@@ -294,13 +298,21 @@ public class LlmService {
         system.append("B4. COLLECTION ONLY: Every card MUST exist in the player's collection. ");
         system.append("Do NOT invent cards.\n\n");
 
+        // B5: Spell Limit
+        system.append("B5. SPELL LIMIT (HARD CONSTRAINT):\n");
+        system.append("  - Maximum 2 spells in the entire deck. Exactly 1 small + 1 big = 2 total.\n");
+        system.append("  - Spell cards are ONLY: The Log, Zap, Arrows, Giant Snowball, Barbarian Barrel, Royal Delivery, ");
+        system.append("Fireball, Poison, Rocket, Lightning, Earthquake, Tornado, Freeze, Rage.\n");
+        system.append("  - Graveyard, Goblin Barrel, Mirror are NOT spells for this rule.\n");
+        system.append("  - If you include 3+ spells, the deck WILL BE REJECTED.\n\n");
+
         // ─── SECTION C: BUILD PRIORITY (FOLLOW THIS ORDER) ───
         system.append("=== BUILD PRIORITY (FOLLOW THIS EXACT ORDER) ===\n\n");
         system.append("Priority 1: PRIMARY ANCHOR — The forced win condition (if specified) MUST be included.\n");
         system.append("Priority 2: MANDATORY COMBOS — Cards with ≥70% co-occurrence with the anchor. ");
         system.append("Include them EVEN IF their level is low (e.g. Level 9). ");
         system.append("Synergy > Levels.\n");
-        system.append("Priority 3: ROLE BALANCE — At minimum: 1 Small Spell, 1 Big Spell, 1 Air Defense.\n");
+        system.append("Priority 3: ROLE BALANCE — Exactly 1 Small Spell + 1 Big Spell (2 total, NO MORE), 1 Air Defense.\n");
         system.append("Priority 4: LEVEL OPTIMIZATION — Fill remaining slots with HIGHEST LEVEL cards ");
         system.append("that fit the archetype. Only optimize levels AFTER priorities 1-3 are satisfied.\n\n");
 
@@ -312,7 +324,7 @@ public class LlmService {
         system.append("  Step 3: Check role balance — do you have a small spell, big spell, air defense?\n");
         system.append("  Step 4: Fill remaining slots with highest-level cards that fit the archetype.\n");
         system.append("  Step 5: Assign slot positions — evos at Index 0, heroes at Index 1, flex at Index 2, rest at 3-7.\n");
-        system.append("  Step 6: Self-check — re-read the HARD CONSTRAINTS and verify you don't violate any.\n\n");
+        system.append("  Step 6: Self-check — COUNT your spells (must be ≤2), COUNT total cards (must be exactly 8), verify HARD CONSTRAINTS.\n\n");
 
         // ─── SECTION E: OUTPUT FORMAT ───
         system.append("=== OUTPUT FORMAT ===\n");
@@ -334,8 +346,22 @@ public class LlmService {
         system.append("    ... (exactly 8 cards, ordered by slot rules above)\n");
         system.append("  ],\n");
         system.append("  \"strategy\": \"Beatdown | Cycle/Control | Bait/Special | Siege | Bridge Spam | Hybrid\",\n");
-        system.append("  \"tactic\": \"Detailed explanation: win condition, offense plan, defense plan, spell usage, key synergies.\"\n");
-        system.append("}\n");
+        system.append("  \"tactic\": \"(SEE TACTIC RULES BELOW)\"\n");
+        system.append("}\n\n");
+
+        // ─── SECTION F: TACTIC QUALITY RULES ───
+        system.append("=== TACTIC QUALITY RULES ===\n");
+        system.append("The 'tactic' field must be an ACTIONABLE GAME PLAN, not a card-by-card description.\n");
+        system.append("Write it as if you are a pro coach briefing a player before a match.\n\n");
+        system.append("REQUIRED STRUCTURE (cover ALL of these):\n");
+        system.append("1. WIN CONDITION TIMING: When and how to deploy the win condition (e.g., 'Place X-Bow at the bridge when opponent's elixir is low after defending a push').\n");
+        system.append("2. KEY COMBOS: Specific card pairings and WHY (e.g., 'Use Tesla behind X-Bow to protect it from tank pushes' or 'Freeze + Graveyard on the tower when they waste their small spell').\n");
+        system.append("3. DEFENSIVE GAMEPLAN: How to defend common threats (e.g., 'Against Hog Rider, use Tesla + Ice Spirit for a positive elixir trade').\n");
+        system.append("4. ELIXIR MANAGEMENT: When to play aggressively vs. passively (e.g., 'Play defensive first minute, then counter-push with Miner + leftover troops').\n");
+        system.append("5. SPELL TIMING: When to use spells (e.g., 'Save Fireball for Musketeer/Wizard. Use Log to reset charges and clear swarms at the bridge').\n\n");
+        system.append("DO NOT just list what each card does. Every sentence must describe a PLAY, a TIMING, or a COMBO.\n");
+        system.append("BAD: 'Tesla provides defense and Electro Spirit offers additional offense.'\n");
+        system.append("GOOD: 'Plant Tesla in the center to pull Hog and Giant. After defending, drop X-Bow at the bridge while Tesla is still alive to tank for it.'\n");
 
         // ─── Completion-specific additions ───
         if (isCompletion) {

@@ -326,22 +326,8 @@ public class DeckService {
                 .mapToInt(c -> c.getElixirCost() != null ? c.getElixirCost() : 0)
                 .average().orElse(0.0);
 
-        // Sort for deep link: Evolved first, then Hero, then by elixir cost
-        List<Card> sortedDeck = deck.stream()
-                .sorted((a, b) -> {
-                    int aEvo = Boolean.TRUE.equals(a.getEvolved()) ? 1 : 0;
-                    int bEvo = Boolean.TRUE.equals(b.getEvolved()) ? 1 : 0;
-                    if (aEvo != bEvo) return bEvo - aEvo;
-                    int aHero = Boolean.TRUE.equals(a.getIsHero()) ? 1 : 0;
-                    int bHero = Boolean.TRUE.equals(b.getIsHero()) ? 1 : 0;
-                    if (aHero != bHero) return bHero - aHero;
-                    return Integer.compare(
-                            a.getElixirCost() != null ? a.getElixirCost() : 0,
-                            b.getElixirCost() != null ? b.getElixirCost() : 0);
-                })
-                .toList();
-
-        String cardIds = sortedDeck.stream()
+        // Build deep link card IDs using the deck's original order (LLM slot ordering)
+        String cardIds = deck.stream()
                 .map(c -> String.valueOf(c.getId()))
                 .collect(Collectors.joining(";"));
 

@@ -21,6 +21,9 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
 
 /**
@@ -171,8 +174,9 @@ public class DeckService {
                 // 3. Fire parallel LLM calls
                 final List<Card> finalPlayerCards = playerCards;
                 final List<CardDto> finalSupportCards = supportCards;
-                java.util.concurrent.atomic.AtomicInteger completedCount = new java.util.concurrent.atomic.AtomicInteger(0);
+                AtomicInteger completedCount = new AtomicInteger(0);
                 int totalDecks = topWCs.size();
+                ExecutorService llmExecutor = Executors.newFixedThreadPool(totalDecks);
 
                 List<CompletableFuture<Void>> futures = topWCs.stream()
                         .map(wc -> CompletableFuture.runAsync(() -> {
@@ -206,11 +210,15 @@ public class DeckService {
                             } catch (Exception e) {
                                 log.error("[SSE] Error generating deck for WC: {}", wc, e);
                             }
-                        }))
+                        }, llmExecutor))
                         .toList();
 
                 // 4. Wait for all to complete, then send "done" event
-                CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
+                try {
+                    CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
+                } finally {
+                    llmExecutor.shutdown();
+                }
 
                 emitter.send(org.springframework.web.servlet.mvc.method.annotation.SseEmitter.event()
                         .name("done")
